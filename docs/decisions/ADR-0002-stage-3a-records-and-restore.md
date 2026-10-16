@@ -1,6 +1,6 @@
 # ADR-0002 - Stage 3a records, durable selection and explicit restore
 
-**Status:** Accepted for Stage 3a implementation, subject to native packaging verification.
+**Status:** Accepted. Native packaging and the Stage 3a workflow were verified; see the [executed verification log](../implementation/STAGE_3A_VERIFICATION.md) for test conditions and limits.
 
 ## Decision
 
