@@ -1,22 +1,34 @@
-use serde::Serialize;
+mod commands;
+pub mod domain;
+pub mod service;
+mod storage;
 
-#[derive(Serialize)]
-struct AppStatus {
-    app_name: &'static str,
-    schema_version: u32,
-}
-
-#[tauri::command]
-fn get_app_status() -> AppStatus {
-    AppStatus {
-        app_name: "Ascension",
-        schema_version: 1,
-    }
-}
+use tauri::Manager;
 
 pub fn run() {
-    tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![get_app_status])
-        .run(tauri::generate_context!())
-        .expect("Ascension could not start");
+    let result = tauri::Builder::default()
+        .setup(|app| {
+            app.manage(commands::AppState::open(app.path().app_data_dir().ok()));
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::load_workspace,
+            commands::create_project,
+            commands::update_project,
+            commands::create_objective,
+            commands::update_objective,
+            commands::select_objective,
+            commands::save_work,
+            commands::export_workspace,
+            commands::preview_import,
+            commands::restore_import,
+        ])
+        .run(tauri::generate_context!());
+    if result.is_err() {
+        rfd::MessageDialog::new()
+            .set_title("Ascension could not start")
+            .set_description("The desktop window could not open. Your saved records have not been replaced. Check that WebView2 is installed, then reopen Ascension.")
+            .set_level(rfd::MessageLevel::Error)
+            .show();
+    }
 }
