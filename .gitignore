@@ -151,6 +151,13 @@ vite.config.ts.timestamp-*
 # Rust / Tauri build artifacts
 /target/
 /src-tauri/target/
+/src-tauri/gen/
+
+# Local setup and synthetic native verification artifacts
+/.toolchain/
+/.scaffold/
+/.smoke/
+/.artifacts/
 
 # Local application databases
 *.db
