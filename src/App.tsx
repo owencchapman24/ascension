@@ -8,6 +8,7 @@ type Editor =
   | { kind: "objective"; id: string | null; project_id: string; title: string; criterion: string }
   | { kind: "work"; objective_id: string; description: string; stop_condition: string; note: string };
 type Guard = { action: () => void; description: string; onKeep?: () => void };
+type ValidationError = { message: string; field: string };
 
 function Modal({ title, children, onCancel }: { title: string; children: ReactNode; onCancel: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -38,17 +39,23 @@ function Modal({ title, children, onCancel }: { title: string; children: ReactNo
   }}><h2>{title}</h2>{children}</div></div>;
 }
 
-function TextField({ id, label, value, limit, multiline = false, optional = false, onChange }: {
-  id: string; label: string; value: string; limit: number; multiline?: boolean; optional?: boolean; onChange: (value: string) => void;
+function TextField({ id, label, value, limit, error, multiline = false, optional = false, onChange }: {
+  id: string; label: string; value: string; limit: number; error?: string; multiline?: boolean; optional?: boolean; onChange: (value: string) => void;
 }) {
-  const props = { id, value, required: !optional, "aria-describedby": `${id}-help`, onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => onChange(event.target.value) };
+  const props = {
+    id, value, required: !optional,
+    "aria-invalid": error ? true : undefined,
+    "aria-describedby": error ? `${id}-error ${id}-help` : `${id}-help`,
+    onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => onChange(event.target.value),
+  };
   return <div className="field"><label htmlFor={id}>{label}{optional && <span className="muted"> (optional)</span>}</label>
+    {error && <p id={`${id}-error`} role="alert" className="field-error">{error}</p>}
     {multiline ? <textarea {...props} rows={id === "note" ? 5 : 3} /> : <input {...props} type="text" />}
     <small id={`${id}-help`} className={[...value].length > limit ? "over-limit" : "muted"}>{[...value].length.toLocaleString()} / {limit.toLocaleString()} characters</small>
   </div>;
 }
 
-function validateEditor(editor: Editor): { message: string; field: string } | null {
+function validateEditor(editor: Editor): ValidationError | null {
   const fields: Array<[string, string, string, number, boolean]> = editor.kind === "project"
     ? [["Project name", "project-title", editor.title, 120, true]]
     : editor.kind === "objective"
@@ -69,12 +76,14 @@ function App() {
   const [busy, setBusy] = useState(false);
   const lock = useRef(false);
   const [error, setError] = useState<CommandError | null>(null);
+  const [validationError, setValidationError] = useState<ValidationError | null>(null);
   const [notice, setNotice] = useState("");
   const [editor, setEditor] = useState<Editor | null>(null);
   const [baseline, setBaseline] = useState("");
   const [guard, setGuard] = useState<Guard | null>(null);
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const editorRef = useRef<HTMLElement>(null);
+  const errorNoticeRef = useRef<HTMLDivElement>(null);
   const previousEditorKey = useRef("");
   const editorKey = editor ? `${editor.kind}:${"id" in editor ? editor.id : editor.objective_id}` : "";
   const dirty = editor !== null && JSON.stringify(editor) !== baseline;
@@ -100,6 +109,12 @@ function App() {
     else if (previousEditorKey.current) document.getElementById("work-heading")?.focus();
     previousEditorKey.current = editorKey;
   }, [editorKey]);
+  useEffect(() => {
+    if (validationError) document.getElementById(`${validationError.field}-error`)?.scrollIntoView?.({ block: "nearest" });
+  }, [validationError]);
+  useEffect(() => {
+    if (error && !editor && !preview) errorNoticeRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [error, editor, preview]);
 
   async function perform(task: () => Promise<void>) {
     if (lock.current) return;
@@ -114,9 +129,14 @@ function App() {
   }
   function openEditor(next: Editor) {
     protectedAction("Opening another editor will discard this unsaved draft.", () => {
-      setEditor(next); setBaseline(JSON.stringify(next)); setError(null); setNotice("");
+      setEditor(next); setBaseline(JSON.stringify(next)); setError(null); setValidationError(null); setNotice("");
     });
   }
+  function updateEditor(next: Editor) {
+    setEditor(next);
+    setValidationError(null);
+  }
+  function fieldError(id: string) { return validationError?.field === id ? validationError.message : undefined; }
   function editProject(item?: Project) { openEditor({ kind: "project", id: item?.id ?? null, title: item?.title ?? "" }); }
   function editObjective(item?: Objective) { openEditor({ kind: "objective", id: item?.id ?? null, project_id: item?.project_id ?? projectId, title: item?.title ?? "", criterion: item?.criterion ?? "" }); }
   function editWork() {
@@ -139,8 +159,10 @@ function App() {
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!workspace || !editor || lock.current) return;
+    setValidationError(null);
+    setError(null);
     const invalid = validateEditor(editor);
-    if (invalid) { setError({ code: "invalid_input", message: invalid.message }); document.getElementById(invalid.field)?.focus(); return; }
+    if (invalid) { setValidationError(invalid); document.getElementById(invalid.field)?.focus(); return; }
     await perform(async () => {
       const expected_generation = workspace.generation;
       let next: Workspace;
@@ -165,6 +187,16 @@ function App() {
     }), () => setPreview(null));
   }
 
+  const errorNotice = error && (
+    <div className="error-banner" ref={errorNoticeRef}>
+      <p role="alert">{error.message}</p>
+      {error.code === "conflict" && <p>Your saved records changed. Reload to review them before trying again.</p>}
+      <button type="button" className="secondary" disabled={busy || !!guard} onClick={reload}>
+        {workspace ? "Reload saved records" : "Retry connection"}
+      </button>
+    </div>
+  );
+
   return (
     <main className="work-shell">
       <header className="app-header">
@@ -172,15 +204,7 @@ function App() {
         <span className="local-label">Stored on this device</span>
       </header>
       {loading && <p role="status">Opening your saved workspace...</p>}
-      {error && !preview && (
-        <div className="error-banner">
-          <p role="alert">{error.message}</p>
-          {error.code === "conflict" && <p>Your saved records changed. Reload to review them before trying again.</p>}
-          <button type="button" className="secondary" disabled={busy || !!guard} onClick={reload}>
-            {workspace ? "Reload saved records" : "Retry connection"}
-          </button>
-        </div>
-      )}
+      {!editor && !preview && errorNotice}
       {notice && <p role="status" className="notice">{notice}</p>}
       {busy && <p role="status" className="muted">Waiting for the desktop app...</p>}
       {workspace && (
@@ -274,30 +298,31 @@ function App() {
               <form onSubmit={(event) => void submit(event)} noValidate>
                 {editor.kind === "project" && (
                   <TextField id="project-title" label="Project name" value={editor.title} limit={120}
-                    onChange={(title) => setEditor({ ...editor, title })} />
+                    error={fieldError("project-title")} onChange={(title) => updateEditor({ ...editor, title })} />
                 )}
                 {editor.kind === "objective" && (
                   <>
                     <TextField id="objective-title" label="Bounded objective" value={editor.title} limit={500}
-                      onChange={(title) => setEditor({ ...editor, title })} />
+                      error={fieldError("objective-title")} onChange={(title) => updateEditor({ ...editor, title })} />
                     <TextField id="criterion" label="Criterion: how will you recognize the outcome?"
                       value={editor.criterion} limit={2000} multiline
-                      onChange={(criterion) => setEditor({ ...editor, criterion })} />
+                      error={fieldError("criterion")} onChange={(criterion) => updateEditor({ ...editor, criterion })} />
                   </>
                 )}
                 {editor.kind === "work" && (
                   <>
                     <TextField id="description" label="Next action: what will you do?"
                       value={editor.description} limit={2000} multiline
-                      onChange={(description) => setEditor({ ...editor, description })} />
+                      error={fieldError("description")} onChange={(description) => updateEditor({ ...editor, description })} />
                     <TextField id="stop-condition" label="Stop condition: where will you stop?"
                       value={editor.stop_condition} limit={2000} multiline
-                      onChange={(stop_condition) => setEditor({ ...editor, stop_condition })} />
+                      error={fieldError("stop-condition")} onChange={(stop_condition) => updateEditor({ ...editor, stop_condition })} />
                     <TextField id="note" label="Resumption note" value={editor.note} limit={8000} multiline optional
-                      onChange={(value) => setEditor({ ...editor, note: value })} />
+                      error={fieldError("note")} onChange={(value) => updateEditor({ ...editor, note: value })} />
                     <p className="muted">Leave the note blank to clear it when you save.</p>
                   </>
                 )}
+                {!preview && errorNotice}
                 <div className="button-row">
                   <button type="submit">{busy ? "Saving..." : editor.kind === "work" ? "Save next action and note" : `Save ${editor.kind}`}</button>
                   <button type="button" className="secondary" onClick={() => protectedAction(

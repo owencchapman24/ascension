@@ -56,6 +56,8 @@ p { margin: 0 0 16px; }
 .draft-label { color: #65511d; background: #fff5d9; padding: 3px 8px; border-radius: 4px; font-size: 0.8rem; white-space: nowrap; }
 .field { margin-bottom: 20px; }
 .field small { display: block; text-align: right; }
+.field-error { color: #982d26; margin: 0 0 8px; font-weight: 600; }
+[aria-invalid="true"] { border-color: #a83c35; }
 .over-limit { color: #a2332b; font-weight: 600; }
 .error-banner { border-left: 4px solid #a83c35; padding: 16px; background: #fff1ed; margin-bottom: 20px; overflow-wrap: anywhere; }
 .error-banner p:last-child { margin-bottom: 0; }

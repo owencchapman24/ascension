@@ -96,6 +96,26 @@ describe("Work", () => {
     expect(input).toHaveFocus(); expect(api.saveWork).not.toHaveBeenCalled();
   });
 
+  it("associates a visible criterion error with the focused field and clears it on edit", async () => {
+    const user = userEvent.setup({ delay: null }); await ready();
+    await user.click(screen.getByRole("button", { name: "Edit objective" }));
+    const criterion = screen.getByLabelText(/Criterion:/);
+    await user.clear(criterion);
+    await user.click(screen.getByRole("button", { name: "Save objective" }));
+    const error = await screen.findByRole("alert");
+    expect(error).toHaveTextContent("Criterion needs a nonempty value.");
+    expect(criterion.parentElement).toContainElement(error);
+    expect(criterion).toHaveAttribute("aria-invalid", "true");
+    expect(criterion).toHaveAttribute("aria-describedby", "criterion-error criterion-help");
+    expect(criterion).toHaveAccessibleDescription(/Criterion needs a nonempty value/);
+    expect(criterion).toHaveFocus();
+    expect(api.updateObjective).not.toHaveBeenCalled();
+    await user.paste("The diagram includes three labels.");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(criterion).not.toHaveAttribute("aria-invalid");
+    expect(criterion).toHaveAttribute("aria-describedby", "criterion-help");
+  });
+
   it("counts Unicode scalars and preserves accepted text instead of truncating it", async () => {
     const user = userEvent.setup({ delay: null }); await ready();
     await user.click(screen.getByRole("button", { name: "New project" }));
@@ -112,6 +132,8 @@ describe("Work", () => {
     const input = await editAction(user); await user.clear(input); await user.type(input, "Draw the sunny corner");
     await user.click(screen.getByRole("button", { name: "Save next action and note" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("The records could not be saved.");
+    expect(within(screen.getByRole("region", { name: "Edit next action and note" })).getByRole("alert"))
+      .toHaveTextContent("The records could not be saved.");
     expect(input).toHaveValue("Draw the sunny corner");
     expect(screen.getByRole("heading", { name: "Sketch the bed on paper" })).toBeInTheDocument();
     expect(screen.queryByText("Next action and note saved on this device.")).not.toBeInTheDocument();
@@ -201,6 +223,17 @@ describe("Work", () => {
     await user.click(screen.getByRole("button", { name: "Import records" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument(); expect(screen.queryByText(/exported to/)).not.toBeInTheDocument();
     expect(api.restoreImport).not.toHaveBeenCalled();
+  });
+
+  it("reports a rejected import from Records without opening a preview or changing saved work", async () => {
+    vi.mocked(api.previewImport).mockRejectedValue({ code: "invalid_import", message: "The selected file is not a valid record set. No records were changed." });
+    const user = userEvent.setup({ delay: null }); await ready();
+    await user.click(screen.getByRole("button", { name: "Import records" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("The selected file is not a valid record set. No records were changed.");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(api.restoreImport).not.toHaveBeenCalled();
+    expect(screen.getByRole("heading", { name: "Sketch the bed on paper" })).toBeInTheDocument();
+    expect(screen.getByText("Compare the sunny corner next time.")).toBeInTheDocument();
   });
 
   it("keeps local records and the draft intact when a confirmed restore fails", async () => {
