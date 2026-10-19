@@ -1,6 +1,120 @@
 # Stage 3a implementation verification
 
-This log records executed checks, not assumed outcomes. All examples and test records are synthetic. Stage 3a passed the documented checks on the Windows environment below: the isolated installed package passed the full native workflow under a verified WebView2 proxy-blocked offline simulation, and the final normal-configuration package separately passed installation, native launch, and close. The test distinction and remaining product limitations are recorded explicitly.
+This log records executed checks, not assumed outcomes. All examples and test records are synthetic. The engineering review below supersedes the earlier acceptance summary; the historical checkpoints remain evidence for their specifically recorded builds.
+
+## Engineering review — 2026-10-19
+
+Review began October 18 and concluded October 19 (America/New_York). Reviewed the completed implementation from clean commit `c378ee5` on `feat/stage-3a-offline-work`, against Stage 3a, the architecture boundaries, and ADRs 0001/0002. No Stage 3b work, framework change, network feature, dependency update, push, or merge was performed. Only synthetic temporary databases and uniquely identified disposable installed profiles were used; the normal installed app and its data were not opened.
+
+### Confirmed defects and fixes
+
+1. **Startup retry could never recover.** `AppState` cached a failed initial database open permanently. After a transient Windows file lock cleared, the UI's Retry connection still returned that cached failure. A regression with an exclusive handle on a populated temporary SQLite database failed before the fix. Failed initialization now retries the same guarded open path; healthy services stay open. The regression verifies the complete original workspace, including identity, generation, and revisions, survives recovery. Corrupt and unavailable databases still fail without replacement.
+2. **Discard-to-editor keyboard focus was lost.** Dismissing the draft guard to open another editor restored focus to the old trigger, overriding the new editor's field focus. The regression failed before the fix. Dialog cleanup now prefers an enabled field in the active editor. Tab, Shift+Tab, Escape, canceled imports, and pending restore behavior remain covered.
+
+Strict Clippy also exposed a preexisting complex boxed callback type in the malformed-import test. Noncapturing callbacks now use plain function pointers. This is test cleanup, not a domain change.
+
+### Automated verification
+
+Commands run from the repository root. This shell needed the existing toolchain directory added to its process PATH:
+
+```powershell
+$env:PATH = (Join-Path $env:USERPROFILE '.cargo\bin') + ';' + $env:PATH
+```
+
+| Exact command/check | Executed result |
+| --- | --- |
+| `git status --short`, required specifications, ADRs, manifests, lockfiles, source and tests | Clean baseline; architectural review completed |
+| `node --version`; `npm.cmd --version`; `rustc -Vv`; `cargo --version`; `rustup show` | Node 22.23.3, npm 10.9.9, Rust/Cargo 1.99.1, stable x86_64-pc-windows-msvc |
+| `vswhere` requiring `Microsoft.VisualStudio.Component.VC.Tools.x86.x64`; WebView2 registry inventory | Existing VS 2022 Build Tools found; WebView2 155.0.4283.62 installed |
+| Baseline `npm.cmd test`; `npm.cmd run typecheck`; `npm.cmd run build` | 22 tests passed; typecheck and production frontend build passed |
+| Baseline `cargo test --manifest-path src-tauri/Cargo.toml --locked --offline` | 22 tests passed: 2 command tests and 20 SQLite integration tests |
+| `npm.cmd test -- --testNamePattern="keeps keyboard focus\|focuses the replacement"` | Before fix: 1 passed, 1 failed; after fix: both passed |
+| `cargo test --manifest-path src-tauri/Cargo.toml --locked --offline retry_recovers_after_a_startup_file_lock -- --test-threads=1` | Failed before fix after releasing the exclusive file handle; passed within the final command suite after fix |
+| `cargo test --manifest-path src-tauri/Cargo.toml --locked --offline commands::tests -- --test-threads=1`; `cargo test --manifest-path src-tauri/Cargo.toml --locked --offline --lib -- --test-threads=1` | Intermediate command suite: 7 passed; final library suite: 10 passed |
+| `cargo test --manifest-path src-tauri/Cargo.toml --locked --offline --test workspace` | Baseline 20 passed; final expanded suite 27 passed |
+| Final `npm.cmd test` | 30 tests passed: 24 Work UI and 6 typed-client tests; no ignored tests |
+| Final `npm.cmd run typecheck` | Passed |
+| Final `npm.cmd run build` (also executed by package builds) | Passed |
+| Final `cargo test --manifest-path src-tauri/Cargo.toml --locked --offline` | 37 tests passed: 10 command/service tests and 27 real-SQLite integration tests; no ignored tests |
+| `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` | Passed |
+| `cargo clippy --manifest-path src-tauri/Cargo.toml --locked --offline --all-targets -- -D warnings` | Initially rejected the test callback type; passed after cleanup |
+| `npm.cmd audit --json --cache .npm --registry https://registry.npmjs.org --fetch-retries=0 --fetch-timeout=10000` | Public registry reported 0 vulnerabilities across 142 dependencies; point-in-time npm result only |
+| `node --check scripts/native-regression.mjs`; PowerShell AST parse of `scripts/verify-native.ps1` | Passed |
+| `git diff --check` | Passed |
+
+Added **23 automated regressions** (8 UI, 8 command/service, 7 SQLite integration). Important additional coverage includes:
+
+- Real SQLite primary/foreign keys, singleton/unique constraints and revision bounds; simultaneous connections attempting the same generation commit exactly one winner.
+- Action and note updates roll back together on late validation, note revision overflow, and injected SQL failure. Reopening confirms no partial save.
+- Corrupt current-version records, invalid selection/generation, broken relations, missing state, and invalid metadata fail closed; future/unknown/physically corrupt databases remain covered.
+- Restoring older records with conflicting local IDs requires explicit replacement, preserves the imported metadata, and produces an exact backup that restores the newer local records.
+- Migration backups recover into a fresh profile with equivalent export bytes; live-WAL migration backups retain committed data. A subprocess exits without connection cleanup and its acknowledged workspace/export survive WAL recovery.
+- Windows locked export destinations keep their prior bytes and leave no temporary export behind; app-data path traversal and case aliases are rejected, while a similarly named sibling export directory is allowed.
+- Import reading accepts the exact 10 MiB boundary and rejects oversized files/directories. Existing malformed JSON, unknown/missing fields, duplicate IDs across record types, references, timestamps, revisions, future versions, stale/superseded previews, backup failures, replay and near-limit export tests remain passing.
+- Keyboard entry/save and remount recovery, failed reload draft retention, overlong/null input, stale preview feedback, and exports while drafts exist. UI tests mock commands; SQLite and installed-app checks supply separate persistence evidence.
+
+One new corruption fixture initially failed because SQLite correctly enforced foreign keys. The fixture now explicitly disables them only on its synthetic tampering connection; the application remains unchanged. The expanded integration suite then passed.
+
+### Native package verification and repeatability
+
+The Windows computer-use runtime failed before initialization with `failed to write kernel assets: The system cannot find the path specified. (os error 3)`. Reset and retry produced the same error. No native inputs were issued through that failed helper. The fallback harness uses Node 22's built-in WebSocket support to drive the **actual installed Tauri WebView2 renderer**, including real Rust commands and SQLite, over a loopback debug port enabled only for that disposable process. It adds no dependency or test command to the app.
+
+`scripts/verify-native.ps1` builds with `npm.cmd run tauri -- build --config <generated-config> -- --locked --offline`, installs a uniquely named current-user NSIS package into `.artifacts/native-<run-id>/installed`, and overrides all app directories to its dedicated `profile` sibling. It runs `node scripts/native-regression.mjs <run-directory>`, then invokes only that installation's uninstaller. Synthetic result JSON and a screenshot remain ignored under `.artifacts/`. The normal app identity/profile is never used.
+
+The script can be run directly where local script execution is enabled. This machine blocks `.ps1` execution, so the reviewed local script was executed as a script block without changing execution policy:
+
+```powershell
+& ([scriptblock]::Create((Get-Content -LiteralPath scripts/verify-native.ps1 -Raw))) -Repository (Get-Location).Path
+```
+
+The first full script invocation inside the restricted process sandbox built and installed successfully, but the app did not initialize SQLite or expose its CDP endpoint. It timed out with connection refusal and was uninstalled. This attempt is **not a native workflow pass**. A fresh invocation outside that process sandbox opened the real Rust-backed workspace and verified the WebView2 proxy flags. The harness initially timed out at Save project because its Enter event omitted the character payload; a read-only check confirmed zero saved projects. Adding the standard carriage-return payload to the automation fixed that issue without any app change. Reinstalling the same package and rerunning `node scripts/native-regression.mjs <isolated-run-directory>` passed all eight lifecycle checks; uninstall exited 0.
+
+That successful package was `Ascension Verification be06e6dc_0.1.0_x64-setup.exe`, 2,254,475 bytes, SHA256 `BAD392FCEADA937FEAA409BE4C921E0C60227FF527076410942E330AA1E89762`. A final fresh full-script run then passed end to end, including explicitly isolated WebView2 environment variables and the result/cleanup path:
+
+| Final native run | Executed result |
+| --- | --- |
+| Script-block invocation above, outside the restricted process sandbox | Exit 0; release compilation 1m56s; all eight native lifecycle checkpoints passed |
+| Package | `Ascension Verification 4aa22caa_0.1.0_x64-setup.exe`, version 0.1.0, 2,254,298 bytes |
+| Installer SHA256 | `59345D6A5F9E83CD4CED39498156E9AEA759DCD427890BADE883676B86E48FB8` |
+| Installed executable SHA256 | `76EE7C6EA8F77B264E37BAED970F18251DC5CBB65E66FF58633C7091CC03A307` |
+| Silent install `/S /D=<isolated-run>/installed` and own `uninstall.exe /S` | Both exit 0; installed executable absent after cleanup; no Ascension processes remain |
+| Synthetic evidence | `.artifacts/native-4aa22caaf8a8443f930bcd8efd8277fa/`: `native-result.json`, `package-result.json`, `work-view.png`; ignored by Git |
+
+No production-source changes occurred between the passing automated suites and these packages. The final harness was syntax checked and independently reviewed for installation/profile/process isolation. Only the focused code/tests/scripts/documentation are committed; no databases, exports, paths in generated configuration, screenshots, binaries or raw diagnostics are staged.
+
+The native checks drive editor activation with mouse input, field entry/save with Tab/Return, and modal navigation with Tab/Shift+Tab/Escape. Assertions check exact saved field values, relationships, selected objective, IDs, revisions and creation timestamps through the real `load_workspace` command. They check visible/focused validation, draft guard behavior and the repaired replacement-editor focus. Native `WM_CLOSE` followed by relaunch preserves the entire workspace exactly; killing only the harness child process and reopening also preserves it. A captured renderer screenshot was inspected: the saved action, stop condition and resumption note are readable with no overlap. This is native installed-WebView2 evidence, not a browser mock or a screenshot of the native file dialogs.
+
+The refusal probe connects only to loopback port 9. Each launch verifies that the installed application's actual WebView2 child has `--proxy-server=http://127.0.0.1:9` and the `tauri.localhost;ipc.localhost` bypass. The harness clears inherited WebView2 overrides and sets its own run-local profile and loopback debug port. No adapter, firewall, execution-policy or machine security settings change.
+
+The normal configuration was also rebuilt using `npm.cmd run tauri -- build -- --locked --offline`: exit 0, release compilation 2m00s. `Ascension_0.1.0_x64-setup.exe` is 2,252,799 bytes, SHA256 `9758568DE90155F71A2260AEB0276172577888E2310A6B82C6EE0401705A8A04`, Authenticode `NotSigned`. It was **not installed/launched during this review**; native runtime evidence is from the isolated configuration with the same production code.
+
+CDP cannot operate the Rust-owned native file dialogs. Export/import internals and UI confirmation/error behavior are tested separately; a current-build native file-picker-to-restore workflow must not be inferred from those separate tests. The older full native workflow remains recorded under Checkpoint E.
+
+### Architecture, security, and remaining risks
+
+- Rust owns persistence, UUIDs, validation, generation conflicts, transactions and native file access. The renderer invokes ten narrow commands and has no SQL/shell/filesystem plugin. CSP restricts connections to IPC and uses bundled assets. No AI, telemetry, cloud, account, game or completion authority was introduced.
+- Restore is intentionally whole-workspace replacement, with validated retained previews, generation checks, a synchronized pre-restore backup and one transaction. It does not implement merge/conflict resolution. Migration snapshots use SQLite backup and include WAL commits.
+- Writes reconstruct the bounded workspace transactionally. This is linear in total records and acceptable for this slice; no performance or large-scale claim was established.
+- Corrupted storage fails closed and is not automatically deleted or recreated. There is no corrupted-database recovery UI; migration backup recovery was tested by copying a synthetic snapshot to a fresh profile.
+- Unsaved drafts are explicitly labeled and guarded during in-app navigation; native window close does not save or guard an unsaved draft. Confirmed saves, rather than drafts, are the durability contract.
+- Creating a second project retains the saved objective selection; select that project before creating its objective. This behavior was retained to avoid silently changing persisted selection.
+- Proxy simulation applies to WebView2, not OS-wide or Rust networking. Abrupt-process recovery does not simulate physical power loss, disk failure or loss of filesystem directory metadata.
+- Native file dialogs and screen reader operation could not be reverified by the available automation. The installer remains unsigned and requires preinstalled WebView2. Backups are local and unpruned. A RustSec advisory database was not fetched; the npm audit is not a complete supply-chain assurance.
+
+**Recommendation: CONDITIONAL PASS for Stage 3a. Not yet cleared for Stage 3b implementation.** No confirmed data-loss or architectural defect remains in the reviewed scope, and both confirmed functional defects were fixed with failing-before/passing-after regressions. The current-build end-to-end native export/import dialog path remains unverified because the computer-use helper could not initialize. Complete that engineering verification with functioning native automation before promoting the Stage 3a gate; the repository owner's separate approval is still required for any Stage 3b scope. Routine QA has not been assigned to the user.
+
+| Required area | Review result |
+| --- | --- |
+| Project/objective creation and editing | PASS: UI, real SQLite, installed app |
+| Next action/note persistence and restart | PASS: exact records after orderly and abrupt process exit |
+| Migrations, constraints, transactions and backups | PASS: real temporary SQLite, live WAL, rollback and recovery |
+| Versioned export/import, IDs/revisions, replay and conflicts | PASS at backend/file and mocked UI boundaries; current native dialogs unverified |
+| Malformed/corrupt/unsupported imports and storage | PASS at tested backend/UI boundaries; valid local state preserved |
+| Windows packaging/installed lifecycle | PASS: normal build and isolated installation/lifecycle/uninstall; normal-profile runtime not repeated |
+| Offline operation | CONDITIONAL: verified refused-proxy WebView2 simulation, not OS-wide denial |
+| Basic keyboard and visible UI behavior | PASS for recorded native controls; screen reader/native dialog checks unverified |
+
+Historical acceptance statements below apply only to their recorded source revisions and test conditions.
 
 ## Checkpoint A — repository and environment
 

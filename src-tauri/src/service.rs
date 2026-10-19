@@ -282,3 +282,115 @@ impl WorkspaceService {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SAMPLE: &[u8] = include_bytes!("../../contracts/fixtures/sample-v1.json");
+
+    fn import(service: &mut WorkspaceService, records: &RecordSet) -> Workspace {
+        let preview = service
+            .preview_import(
+                &serde_json::to_vec(records).unwrap(),
+                "synthetic.json".into(),
+            )
+            .unwrap();
+        service
+            .restore_import(RestoreInput {
+                token: preview.token,
+                expected_generation: preview.generation,
+            })
+            .unwrap()
+            .workspace
+    }
+
+    #[test]
+    fn note_revision_failure_rolls_back_a_simultaneous_action_edit_and_survives_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("workspace.sqlite3");
+        let backups = directory.path().join("backups");
+        let mut service = WorkspaceService::open(&database, &backups).unwrap();
+        let mut records: RecordSet = serde_json::from_slice(SAMPLE).unwrap();
+        records.notes[0].revision = u32::MAX;
+        let original = import(&mut service, &records);
+        let original_export = service.export_bytes().unwrap();
+        let note = &records.notes[0];
+        let action = records
+            .actions
+            .iter()
+            .find(|action| action.objective_id == note.objective_id)
+            .unwrap();
+        let failure = service
+            .save_work(SaveWorkInput {
+                expected_generation: original.generation.clone(),
+                objective_id: note.objective_id.clone(),
+                description: "This action must not be partially saved".into(),
+                stop_condition: action.stop_condition.clone(),
+                note: Some("This note cannot advance its revision".into()),
+            })
+            .unwrap_err();
+        assert_eq!(failure.code, "invalid_input");
+        assert_eq!(service.load_workspace().unwrap(), original);
+        assert_eq!(service.export_bytes().unwrap(), original_export);
+        drop(service);
+        let reopened = WorkspaceService::open(&database, &backups).unwrap();
+        assert_eq!(reopened.load_workspace().unwrap(), original);
+        assert_eq!(reopened.export_bytes().unwrap(), original_export);
+    }
+
+    #[test]
+    fn unchanged_mutations_keep_preview_valid_but_stale_noops_are_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("workspace.sqlite3");
+        let backups = directory.path().join("backups");
+        let mut service = WorkspaceService::open(&database, &backups).unwrap();
+        let records: RecordSet = serde_json::from_slice(SAMPLE).unwrap();
+        let original = import(&mut service, &records);
+        let preview = service.preview_import(SAMPLE, "same.json".into()).unwrap();
+        let input = UpdateProjectInput {
+            expected_generation: original.generation.clone(),
+            id: original.projects[0].id.clone(),
+            title: original.projects[0].title.clone(),
+        };
+        assert_eq!(service.update_project(input.clone()).unwrap(), original);
+        let objective = &original.objectives[0];
+        assert_eq!(
+            service
+                .update_objective(UpdateObjectiveInput {
+                    expected_generation: original.generation.clone(),
+                    id: objective.id.clone(),
+                    title: objective.title.clone(),
+                    criterion: objective.criterion.clone(),
+                })
+                .unwrap(),
+            original
+        );
+        assert_eq!(
+            service
+                .select_objective(SelectObjectiveInput {
+                    expected_generation: original.generation.clone(),
+                    id: original.selected_objective_id.clone(),
+                })
+                .unwrap(),
+            original
+        );
+        assert!(
+            service
+                .restore_import(RestoreInput {
+                    token: preview.token,
+                    expected_generation: preview.generation,
+                })
+                .unwrap()
+                .unchanged
+        );
+        let current = service
+            .create_project(CreateProjectInput {
+                expected_generation: original.generation,
+                title: "A concurrent synthetic addition".into(),
+            })
+            .unwrap();
+        assert_eq!(service.update_project(input).unwrap_err().code, "conflict");
+        assert_eq!(service.load_workspace().unwrap(), current);
+    }
+}

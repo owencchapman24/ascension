@@ -2,7 +2,7 @@
 
 Ascension is a Windows-first, local-first workspace for resuming a concrete next action. Development is limited to the [Stage 3a offline vertical slice](docs/specs/STAGE_3A.md): a project, bounded parent objective, explicit criterion, next action, stopping condition, and optional resumption note, with durable local storage and versioned export/restore.
 
-**Stage 3a is implemented and passed its documented Windows checks.** SQLite persistence, the Work screen, editing, versioned export, and explicit restore are implemented. Automated checks passed: 22 Rust tests (20 real temporary-SQLite integration tests and two file-command tests), 22 UI/client tests, TypeScript checks, frontend build, and Rust formatting. The installed smoke package passed the full native workflow under a verified WebView2 proxy-blocked offline simulation, including native rechecks of two error-visibility fixes. The final normal-configuration installer also built, installed, opened a readable Rust-backed Work view, and closed successfully. See the [executed verification log](docs/implementation/STAGE_3A_VERIFICATION.md) for the exact evidence and its limits.
+**Stage 3a is implemented; the engineering review recommendation is CONDITIONAL PASS.** The review fixed startup database retry and editor focus defects and expanded coverage to 37 Rust tests and 30 UI/client tests. TypeScript, production frontend build, formatting, strict Clippy and npm audit passed. Native package evidence and remaining verification limits are recorded in the [executed verification log](docs/implementation/STAGE_3A_VERIFICATION.md#engineering-review--2026-10-19). Current-build native file-dialog export/restore remains a verification gap. Stage 3b is not yet cleared.
 
 Stage 3a must let someone save an action and note, close the app, and recover them immediately after reopening offline. It includes safe, explicit restoration of versioned records with stable identities. It excludes AI, a game economy, completion validation, accounts, cloud sync, telemetry, payments, and automatic ingestion.
 
@@ -66,16 +66,17 @@ npm.cmd run typecheck
 npm.cmd run build
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 cargo test --manifest-path src-tauri/Cargo.toml --locked
+cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
 npm.cmd run tauri -- build -- --locked
 ```
 
 The automated test, typecheck, frontend build, and formatting commands passed for the implemented slice. The Rust tests exercise real temporary databases, migration backups including committed WAL data, restart persistence, stale writes, exact export/restore, import rejection, and rollback. UI tests cover saved-state display, editing, keyboard interaction, failure recovery, explicit replacement, and error feedback.
 
-The final `-- --locked` forwards the lockfile requirement to Cargo. Tauri runs the frontend build and creates the configured NSIS installer under `src-tauri/target/release/bundle/nsis/`. The normal package is named `Ascension_0.1.0_x64-setup.exe`; the isolated native test package is named `Ascension Smoke_0.1.0_x64-setup.exe`.
+The final `-- --locked` forwards the lockfile requirement to Cargo. Tauri runs the frontend build and creates the configured NSIS installer under `src-tauri/target/release/bundle/nsis/`. The normal package is named `Ascension_0.1.0_x64-setup.exe`; the new isolated harness produces `Ascension Verification <run-id>_0.1.0_x64-setup.exe`.
 
-The installed smoke package passed keyboard operation, save/restart persistence, exact export round trips, explicit empty/restore/replay flows, and rejection of malformed JSON, unsupported versions, duplicate IDs, and broken references. The final rebuild also passed native checks for visible criterion validation, guarded draft discard, and automatically revealed import errors; all four exported checkpoints remained byte-for-byte identical. Its application identity and data directory were isolated for synthetic testing. WebView2's unavailable-proxy flag was verified on the installed app's child process, and a connection-refusal probe preceded launch/reopen. This was a process-scoped offline simulation; OS networking was unchanged. The final normal package was separately installed and checked for native launch, successful Rust workspace loading, readable display, and close without the proxy. The full workflow was tested in the isolated variant; it was not repeated against the normal data directory.
+For repeatable installed-app lifecycle checks, run `scripts/verify-native.ps1`. It builds a unique verification package, silently installs into an ignored repository-local directory, uses a disposable profile, drives its actual WebView2 UI through loopback CDP, and uninstalls that test package afterward. No normal user profile is opened. The [verification log](docs/implementation/STAGE_3A_VERIFICATION.md) records the exact invocation for shells that disable `.ps1` files, plus results and limits. This harness covers keyboard entry/save, editing, focus/validation, graceful restart and abrupt-stop recovery; it cannot drive native file dialogs.
 
-The final normal installer is 2,253,514 bytes (approximately 2.15 MiB) and is unsigned. It requires the preinstalled WebView2 runtime described above. No signing, public release, or CI deployment was performed.
+The earlier smoke package passed native export/import, replay and invalid-file rejection under a verified WebView2 proxy-blocked simulation. Those historical checks apply to their recorded source revisions; they are not a new end-to-end result for later builds. Proxy simulation is process-scoped; OS networking is unchanged. Installers remain unsigned and require preinstalled WebView2. No signing, public release, or CI deployment was performed.
 
 ## Local data, export, and recovery
 

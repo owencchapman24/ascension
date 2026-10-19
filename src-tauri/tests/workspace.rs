@@ -4,6 +4,7 @@ use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Barrier};
 use tempfile::TempDir;
 
 const SAMPLE: &[u8] = include_bytes!("../../contracts/fixtures/sample-v1.json");
@@ -348,61 +349,61 @@ fn malformed_and_inconsistent_imports_do_not_change_any_saved_state() {
         vec![0xff],
         vec![b' '; MAX_IMPORT_BYTES + 1],
     ];
-    let changes: Vec<Box<dyn Fn(&mut Value)>> = vec![
-        Box::new(|v| {
+    let changes: Vec<fn(&mut Value)> = vec![
+        |v| {
             v["schema_version"] = json!(99);
-        }),
-        Box::new(|v| {
+        },
+        |v| {
             v["format"] = json!("other-format");
-        }),
-        Box::new(|v| {
+        },
+        |v| {
             v["projects"][1]["id"] = v["projects"][0]["id"].clone();
-        }),
-        Box::new(|v| {
+        },
+        |v| {
             v["actions"][0]["id"] = v["projects"][0]["id"].clone();
-        }),
-        Box::new(|v| {
+        },
+        |v| {
             v["objectives"][0]["project_id"] = json!(uuid::Uuid::new_v4().to_string());
-        }),
-        Box::new(|v| {
+        },
+        |v| {
             v["actions"][1]["objective_id"] = v["actions"][0]["objective_id"].clone();
-        }),
-        Box::new(|v| {
+        },
+        |v| {
             v["notes"][1]["objective_id"] = v["notes"][0]["objective_id"].clone();
-        }),
-        Box::new(|v| {
+        },
+        |v| {
             v["notes"][0]["objective_id"] = json!(uuid::Uuid::new_v4().to_string());
-        }),
-        Box::new(|v| {
+        },
+        |v| {
             v["selected_objective_id"] = json!(uuid::Uuid::new_v4().to_string());
-        }),
-        Box::new(|v| {
+        },
+        |v| {
             v.as_object_mut().unwrap().remove("selected_objective_id");
-        }),
-        Box::new(|v| {
+        },
+        |v| {
             v["unknown_field"] = json!(true);
-        }),
-        Box::new(|v| {
+        },
+        |v| {
             v["projects"][0]["unknown_field"] = json!(true);
-        }),
-        Box::new(|v| {
+        },
+        |v| {
             v["projects"][0]["revision"] = json!(0);
-        }),
-        Box::new(|v| {
+        },
+        |v| {
             v["projects"][0]["revision"] = json!(4_294_967_296_u64);
-        }),
-        Box::new(|v| {
+        },
+        |v| {
             v["projects"][0]["created_at"] = json!("2026-10-16T12:00:00+00:00");
-        }),
-        Box::new(|v| {
+        },
+        |v| {
             v["projects"][0]["id"] = json!("invalid-id");
-        }),
-        Box::new(|v| {
+        },
+        |v| {
             v["objectives"][0]["criterion"] = json!("  ");
-        }),
-        Box::new(|v| {
+        },
+        |v| {
             v["notes"][0]["text"] = json!("x".repeat(8_001));
-        }),
+        },
     ];
     for change in changes {
         let mut value = sample.clone();
@@ -1023,5 +1024,357 @@ fn future_unknown_and_corrupt_databases_are_rejected_without_recreation() {
     assert_eq!(
         fs::read(&corrupt).unwrap(),
         b"synthetic invalid sqlite bytes"
+    );
+}
+
+#[test]
+fn sqlite_constraints_reject_broken_relationships_duplicates_and_invalid_revisions() {
+    let mut fixture = Fixture::new();
+    let original = fixture.populate();
+    let connection = Connection::open(&fixture.database).unwrap();
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .unwrap();
+    let statements = [
+        "DELETE FROM projects",
+        "DELETE FROM objectives",
+        "UPDATE objectives SET project_id='missing-project'",
+        "UPDATE actions SET objective_id='missing-objective'",
+        "UPDATE notes SET objective_id='missing-objective'",
+        "UPDATE workspace_state SET selected_objective_id='missing-objective'",
+        "INSERT INTO projects SELECT * FROM projects",
+        "INSERT INTO actions SELECT 'duplicate-action',objective_id,description,stop_condition,revision,created_at,updated_at FROM actions",
+        "INSERT INTO notes SELECT 'duplicate-note',objective_id,text,revision,created_at,updated_at FROM notes",
+        "UPDATE projects SET revision=0",
+        "UPDATE objectives SET revision=-1",
+        "UPDATE actions SET revision=4294967296",
+        "UPDATE notes SET revision=NULL",
+        "INSERT INTO workspace_state VALUES (2,'another-generation',NULL)",
+    ];
+    for statement in statements {
+        assert_eq!(
+            connection
+                .execute(statement, [])
+                .unwrap_err()
+                .sqlite_error_code(),
+            Some(rusqlite::ErrorCode::ConstraintViolation),
+            "{statement}"
+        );
+        assert_eq!(fixture.service.load_workspace().unwrap(), original);
+    }
+    assert_eq!(
+        connection
+            .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+            .unwrap(),
+        "ok"
+    );
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get::<_, u32>(0)
+            })
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn simultaneous_writers_commit_exactly_one_generation_and_preserve_the_winner() {
+    let mut fixture = Fixture::new();
+    let original = fixture.populate();
+    let barrier = Arc::new(Barrier::new(3));
+    let handles: Vec<_> = (0..2)
+        .map(|index| {
+            let database = fixture.database.clone();
+            let backups = fixture.backups.clone();
+            let generation = original.generation.clone();
+            let project_id = original.projects[0].id.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let mut service = WorkspaceService::open(&database, &backups).unwrap();
+                barrier.wait();
+                service.update_project(UpdateProjectInput {
+                    expected_generation: generation,
+                    id: project_id,
+                    title: format!("Synthetic concurrent edit {index}"),
+                })
+            })
+        })
+        .collect();
+    barrier.wait();
+    let results: Vec<_> = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect();
+    let successes: Vec<_> = results
+        .iter()
+        .filter_map(|result| result.as_ref().ok())
+        .collect();
+    let failures: Vec<_> = results
+        .iter()
+        .filter_map(|result| result.as_ref().err())
+        .collect();
+    assert_eq!(successes.len(), 1);
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].code, "conflict");
+    let winner = successes[0];
+    assert_eq!(
+        winner.projects[0].revision,
+        original.projects[0].revision + 1
+    );
+    assert_eq!(winner.actions, original.actions);
+    assert_eq!(winner.notes, original.notes);
+    assert_eq!(&fixture.service.load_workspace().unwrap(), winner);
+    let reopened = WorkspaceService::open(&fixture.database, &fixture.backups).unwrap();
+    assert_eq!(&reopened.load_workspace().unwrap(), winner);
+}
+
+#[test]
+fn action_and_note_save_rolls_back_together_on_late_validation_or_sql_failure() {
+    for fail_in_sql in [false, true] {
+        let mut fixture = Fixture::new();
+        let mut records: RecordSet = serde_json::from_slice(SAMPLE).unwrap();
+        if !fail_in_sql {
+            records.notes[0].revision = u32::MAX;
+        }
+        let original = fixture
+            .restore(&serde_json::to_vec(&records).unwrap())
+            .workspace;
+        let connection = Connection::open(&fixture.database).unwrap();
+        if fail_in_sql {
+            connection.execute_batch("CREATE TRIGGER reject_note_insert BEFORE INSERT ON notes BEGIN SELECT RAISE(ABORT, 'synthetic late failure'); END;").unwrap();
+        }
+        let mut input = save_input(&original, Some("Changed synthetic note".into()));
+        input.description = "Changed synthetic action".into();
+        input.stop_condition = "A changed stopping point is visible.".into();
+        let error = fixture.service.save_work(input).unwrap_err();
+        assert_eq!(
+            error.code,
+            if fail_in_sql {
+                "storage_error"
+            } else {
+                "invalid_input"
+            }
+        );
+        assert_eq!(fixture.service.load_workspace().unwrap(), original);
+        drop(connection);
+        drop(fixture.service);
+        let reopened = WorkspaceService::open(&fixture.database, &fixture.backups).unwrap();
+        assert_eq!(reopened.load_workspace().unwrap(), original);
+    }
+}
+
+#[test]
+fn explicit_restore_of_conflicting_local_ids_preserves_incoming_versions_and_recoverable_backup() {
+    let mut fixture = Fixture::new();
+    let old = fixture.populate();
+    let old_export = fixture.service.export_bytes().unwrap();
+    let new = fixture
+        .service
+        .update_project(UpdateProjectInput {
+            expected_generation: old.generation.clone(),
+            id: old.projects[0].id.clone(),
+            title: "Newer local title for the same identity".into(),
+        })
+        .unwrap();
+    let new_export = fixture.service.export_bytes().unwrap();
+    let preview = fixture
+        .service
+        .preview_import(&old_export, "older-synthetic-export.json".into())
+        .unwrap();
+    assert_eq!(fixture.service.load_workspace().unwrap(), new);
+    assert!(fixture.backup_paths().is_empty());
+    let restored = fixture
+        .service
+        .restore_import(RestoreInput {
+            token: preview.token,
+            expected_generation: preview.generation,
+        })
+        .unwrap();
+    assert!(restored.backup_created);
+    assert_eq!(RecordSet::from(&restored.workspace), RecordSet::from(&old));
+    let backup = fs::read(&fixture.backup_paths()[0]).unwrap();
+    assert_eq!(backup, new_export);
+    let recovered = fixture.restore(&backup);
+    assert_eq!(RecordSet::from(&recovered.workspace), RecordSet::from(&new));
+}
+
+#[test]
+fn valid_sqlite_with_corrupted_current_records_is_rejected_without_replacing_records() {
+    let corruptions = [
+        "UPDATE projects SET title='   '",
+        "UPDATE objectives SET created_at='invalid-timestamp'",
+        "UPDATE actions SET id=(SELECT id FROM projects LIMIT 1)",
+        "UPDATE notes SET objective_id='missing-objective'",
+        "UPDATE workspace_state SET generation='invalid-generation'",
+        "UPDATE workspace_state SET selected_objective_id='missing-objective'",
+        "DELETE FROM workspace_state",
+        "PRAGMA ignore_check_constraints=ON; UPDATE notes SET revision=0",
+    ];
+    for corruption in corruptions {
+        let mut fixture = Fixture::new();
+        let original = fixture.populate();
+        drop(fixture.service);
+        let connection = Connection::open(&fixture.database).unwrap();
+        // Simulate externally damaged storage; normal connections reject these writes.
+        connection
+            .pragma_update(None, "foreign_keys", false)
+            .unwrap();
+        connection.execute_batch(corruption).unwrap();
+        let rows_before: Vec<(String, String, u32)> = connection
+            .prepare("SELECT id,description,revision FROM actions ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            WorkspaceService::open(&fixture.database, &fixture.backups)
+                .err()
+                .unwrap()
+                .code,
+            "storage_error",
+            "{corruption}"
+        );
+        let rows_after: Vec<(String, String, u32)> = connection
+            .prepare("SELECT id,description,revision FROM actions ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows_after, rows_before);
+        assert_eq!(rows_after[0].1, original.actions[0].description);
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
+                .unwrap(),
+            2
+        );
+        assert!(!fixture.backups.exists());
+    }
+}
+
+#[test]
+fn migration_backup_recovers_as_a_complete_workspace_in_a_fresh_profile() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("legacy.sqlite3");
+    let backups = directory.path().join("backups");
+    let expected = seed_v1(&database);
+    let migrated = WorkspaceService::open(&database, &backups).unwrap();
+    assert_eq!(
+        RecordSet::from(&migrated.load_workspace().unwrap()),
+        expected
+    );
+    let backup = fs::read_dir(&backups)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let recovery_database = directory.path().join("recovery.sqlite3");
+    fs::copy(&backup, &recovery_database).unwrap();
+    let recovered = WorkspaceService::open(
+        &recovery_database,
+        &directory.path().join("recovery-backups"),
+    )
+    .unwrap();
+    assert_eq!(
+        RecordSet::from(&recovered.load_workspace().unwrap()),
+        expected
+    );
+    assert_eq!(
+        recovered.export_bytes().unwrap(),
+        migrated.export_bytes().unwrap()
+    );
+    let legacy_backup =
+        Connection::open_with_flags(&backup, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    assert_eq!(
+        legacy_backup
+            .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn committed_wal_survives_process_exit_without_connection_cleanup() {
+    const PROFILE_ENV: &str = "ASCENSION_TEST_ABRUPT_EXIT_PROFILE";
+    if let Some(profile) = std::env::var_os(PROFILE_ENV) {
+        // This subprocess intentionally exits without running the connection's
+        // destructor, leaving committed records in SQLite's WAL for recovery.
+        let profile = PathBuf::from(profile);
+        let mut service =
+            WorkspaceService::open(&profile.join("workspace.sqlite3"), &profile.join("backups"))
+                .unwrap();
+        let initial = service.load_workspace().unwrap();
+        let project = service
+            .create_project(CreateProjectInput {
+                expected_generation: initial.generation,
+                title: "Synthetic abrupt-exit project".into(),
+            })
+            .unwrap();
+        let objective = service
+            .create_objective(CreateObjectiveInput {
+                expected_generation: project.generation,
+                project_id: project.projects[0].id.clone(),
+                title: "Recover a committed action".into(),
+                criterion: "The same action and note appear after restarting.".into(),
+            })
+            .unwrap();
+        let saved = service
+            .save_work(SaveWorkInput {
+                expected_generation: objective.generation,
+                objective_id: objective.objectives[0].id.clone(),
+                description: "Read the synthetic recovery example".into(),
+                stop_condition: "The complete example is visible.".into(),
+                note: Some("Continue from the saved second step.".into()),
+            })
+            .unwrap();
+        fs::write(
+            profile.join("expected-workspace.json"),
+            serde_json::to_vec(&saved).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            profile.join("expected-export.json"),
+            service.export_bytes().unwrap(),
+        )
+        .unwrap();
+        std::process::exit(0);
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "committed_wal_survives_process_exit_without_connection_cleanup",
+        ])
+        .env(PROFILE_ENV, directory.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "Synthetic writer failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        fs::metadata(directory.path().join("workspace.sqlite3-wal"))
+            .unwrap()
+            .len()
+            > 0
+    );
+    let expected: Workspace = serde_json::from_slice(
+        &fs::read(directory.path().join("expected-workspace.json")).unwrap(),
+    )
+    .unwrap();
+    let reopened = WorkspaceService::open(
+        &directory.path().join("workspace.sqlite3"),
+        &directory.path().join("backups"),
+    )
+    .unwrap();
+    assert_eq!(reopened.load_workspace().unwrap(), expected);
+    assert_eq!(
+        reopened.export_bytes().unwrap(),
+        fs::read(directory.path().join("expected-export.json")).unwrap()
     );
 }

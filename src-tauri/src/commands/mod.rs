@@ -39,17 +39,17 @@ fn file_error() -> CommandError {
 
 impl AppState {
     pub(crate) fn open(data_dir: Option<PathBuf>) -> Self {
-        let service = data_dir
-            .as_ref()
-            .ok_or_else(storage_error)
-            .and_then(|root| {
-                fs::create_dir_all(root).map_err(|_| storage_error())?;
-                WorkspaceService::open(&root.join("ascension.sqlite3"), &root.join("backups"))
-            });
+        let service = Self::open_service(data_dir.as_deref());
         Self {
             service: Arc::new(Mutex::new(service)),
             data_dir,
         }
+    }
+
+    fn open_service(data_dir: Option<&Path>) -> Result<WorkspaceService, CommandError> {
+        let root = data_dir.ok_or_else(storage_error)?;
+        fs::create_dir_all(root).map_err(|_| storage_error())?;
+        WorkspaceService::open(&root.join("ascension.sqlite3"), &root.join("backups"))
     }
 
     fn with_service<T>(
@@ -57,6 +57,11 @@ impl AppState {
         operation: impl FnOnce(&mut WorkspaceService) -> Result<T, CommandError>,
     ) -> Result<T, CommandError> {
         let mut guard = self.service.lock().map_err(|_| storage_error())?;
+        // A transient startup failure must not make the UI's retry permanently fail.
+        // Reuse the same guarded open path; never recreate or replace a failed database.
+        if guard.is_err() {
+            *guard = Self::open_service(self.data_dir.as_deref());
+        }
         let service = guard.as_mut().map_err(|failure| failure.clone())?;
         operation(service)
     }
@@ -327,6 +332,156 @@ mod tests {
                 .unwrap_err()
                 .code,
             "file_error"
+        );
+    }
+
+    #[test]
+    fn exports_reject_normalized_app_data_paths_but_allow_a_similar_sibling() {
+        let directory = tempfile::tempdir().unwrap();
+        let app_data = directory.path().join("app-data");
+        let nested = app_data.join("nested");
+        let sibling = directory.path().join("app-data-exports");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir(&sibling).unwrap();
+        for selected in [
+            nested.join("backup.json"),
+            nested.join("..").join("backup.json"),
+        ] {
+            assert_eq!(
+                write_export(&selected, &app_data, b"replacement")
+                    .unwrap_err()
+                    .code,
+                "file_error"
+            );
+            assert!(!selected.exists());
+        }
+        let selected = sibling.join("records.JSON");
+        write_export(&selected, &app_data, b"export").unwrap();
+        assert_eq!(fs::read(selected).unwrap(), b"export");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn exports_reject_windows_case_aliases_of_app_data() {
+        let directory = tempfile::tempdir().unwrap();
+        let app_data = directory.path().join("app-data");
+        fs::create_dir(&app_data).unwrap();
+        let selected = directory.path().join("APP-DATA").join("backup.json");
+        fs::write(&selected, b"existing backup").unwrap();
+        assert_eq!(
+            write_export(&selected, &app_data, b"replacement")
+                .unwrap_err()
+                .code,
+            "file_error"
+        );
+        assert_eq!(fs::read(selected).unwrap(), b"existing backup");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn locked_export_target_is_preserved_and_temporary_file_is_removed() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let app_data = directory.path().join("app-data");
+        fs::create_dir(&app_data).unwrap();
+        let selected = directory.path().join("records.json");
+        fs::write(&selected, b"existing export").unwrap();
+        let locked = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1) // FILE_SHARE_READ, deliberately excluding delete/replace.
+            .open(&selected)
+            .unwrap();
+        assert_eq!(
+            write_export(&selected, &app_data, b"replacement")
+                .unwrap_err()
+                .code,
+            "file_error"
+        );
+        assert_eq!(fs::read(&selected).unwrap(), b"existing export");
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 2);
+        drop(locked);
+        write_export(&selected, &app_data, b"replacement").unwrap();
+        assert_eq!(fs::read(selected).unwrap(), b"replacement");
+    }
+
+    #[test]
+    fn import_read_accepts_the_exact_size_limit_and_rejects_a_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let selected = directory.path().join("boundary.json");
+        File::create(&selected)
+            .unwrap()
+            .set_len(MAX_IMPORT_BYTES as u64)
+            .unwrap();
+        assert_eq!(read_import(&selected).unwrap().len(), MAX_IMPORT_BYTES);
+        assert!(read_import(directory.path()).is_err());
+    }
+
+    #[test]
+    fn unavailable_storage_returns_a_safe_error_without_replacing_existing_bytes() {
+        let absent = AppState::open(None);
+        assert_eq!(
+            absent
+                .with_service(|service| service.load_workspace())
+                .unwrap_err()
+                .code,
+            "storage_error"
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("ascension.sqlite3");
+        let original = b"synthetic corrupt database";
+        fs::write(&database, original).unwrap();
+        let state = AppState::open(Some(directory.path().into()));
+        let failure = state
+            .with_service(|service| service.load_workspace())
+            .unwrap_err();
+        assert_eq!(failure.code, "storage_error");
+        assert!(
+            !failure
+                .message
+                .contains(&directory.path().to_string_lossy().to_string())
+        );
+        assert_eq!(fs::read(database).unwrap(), original);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn retry_recovers_after_a_startup_file_lock_clears_without_replacing_records() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let original = {
+            let state = AppState::open(Some(directory.path().into()));
+            state
+                .with_service(|service| {
+                    let initial = service.load_workspace()?;
+                    service.create_project(CreateProjectInput {
+                        expected_generation: initial.generation,
+                        title: "Synthetic records survive startup retry".into(),
+                    })
+                })
+                .unwrap()
+        };
+        let locked = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(0)
+            .open(directory.path().join("ascension.sqlite3"))
+            .unwrap();
+        let state = AppState::open(Some(directory.path().into()));
+        assert_eq!(
+            state
+                .with_service(|service| service.load_workspace())
+                .unwrap_err()
+                .code,
+            "storage_error"
+        );
+        drop(locked);
+        assert_eq!(
+            state
+                .with_service(|service| service.load_workspace())
+                .unwrap(),
+            original
         );
     }
 }

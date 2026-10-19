@@ -17,8 +17,11 @@ function Modal({ title, children, onCancel }: { title: string; children: ReactNo
     ref.current?.querySelector<HTMLElement>("button")?.focus();
     return () => queueMicrotask(() => {
       const nextDialog = document.querySelector<HTMLElement>("[role=dialog]");
+      const editorInput = document.querySelector<HTMLElement>(".editor-panel input, .editor-panel textarea");
       if (nextDialog) {
         nextDialog.querySelector<HTMLElement>("button:not(:disabled)")?.focus();
+      } else if (editorInput && !editorInput.matches(":disabled")) {
+        editorInput.focus();
       } else if (previous?.isConnected && !previous.matches(":disabled")) {
         previous.focus();
       } else {

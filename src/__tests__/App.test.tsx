@@ -257,4 +257,133 @@ describe("Work", () => {
     await user.tab(); expect(screen.getByRole("button", { name: "Retry connection" })).toHaveFocus();
     await user.keyboard("{Enter}"); expect(await screen.findByRole("heading", { name: "Work" })).toBeInTheDocument();
   });
+
+  it("keeps keyboard focus in the import dialog while restoration is pending", async () => {
+    let finish!: (value: api.RestoreResult) => void;
+    vi.mocked(api.previewImport).mockResolvedValue(incoming);
+    vi.mocked(api.restoreImport).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const user = userEvent.setup({ delay: null }); await ready();
+    await user.click(screen.getByRole("button", { name: "Import records" }));
+    const dialog = await screen.findByRole("dialog", { name: "Review import" });
+    const cancel = within(dialog).getByRole("button", { name: "Cancel import" });
+    const replace = within(dialog).getByRole("button", { name: "Replace local records" });
+    expect(cancel).toHaveFocus();
+    await user.tab({ shift: true }); expect(replace).toHaveFocus();
+    await user.tab(); expect(cancel).toHaveFocus();
+    await user.tab(); await user.keyboard("{Enter}");
+    expect(within(dialog).getByRole("button", { name: "Restoring..." })).toBeDisabled();
+    await user.tab(); expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    await user.tab({ shift: true }); expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    await user.keyboard("{Escape}"); expect(dialog).toBeInTheDocument();
+    await act(async () => finish({ workspace: saved, backup_created: false, unchanged: true }));
+    expect(await screen.findByText(/already matches your saved records/)).toBeInTheDocument();
+  });
+
+  it("focuses the replacement editor after discarding a draft of the same kind", async () => {
+    const user = userEvent.setup({ delay: null }); await ready();
+    await user.click(screen.getByRole("button", { name: "New project" }));
+    await user.keyboard("First draft");
+    await user.click(screen.getByRole("button", { name: "New project" }));
+    await user.click(screen.getByRole("button", { name: "Discard draft and continue" }));
+    await waitFor(() => expect(screen.getByLabelText("Project name")).toHaveFocus());
+    expect(screen.getByLabelText("Project name")).toHaveValue("");
+  });
+
+  it("completes the creation flow with keyboard controls and recovers the confirmed workspace on remount", async () => {
+    const empty: Workspace = { ...saved, selected_objective_id: null, projects: [], objectives: [], actions: [], notes: [] };
+    const withProject = { ...empty, generation: "project-generation", projects: saved.projects };
+    const withObjective = { ...withProject, generation: "objective-generation", selected_objective_id: objectiveId, objectives: [saved.objectives[0]] };
+    const withWork = { ...withObjective, generation: "work-generation", actions: saved.actions, notes: saved.notes };
+    vi.mocked(api.loadWorkspace).mockResolvedValueOnce(empty).mockResolvedValue(withWork);
+    vi.mocked(api.createProject).mockResolvedValue(withProject);
+    vi.mocked(api.createObjective).mockResolvedValue(withObjective);
+    vi.mocked(api.saveWork).mockResolvedValue(withWork);
+    const user = userEvent.setup({ delay: null }); await ready();
+    await user.tab(); expect(screen.getByRole("button", { name: "New project" })).toHaveFocus();
+    await user.keyboard("{Enter}"); expect(screen.getByLabelText("Project name")).toHaveFocus();
+    await user.keyboard(`${saved.projects[0].title}{Enter}`);
+    await screen.findByText("Project saved on this device.");
+    expect(screen.getByRole("heading", { name: "Work" })).toHaveFocus();
+    await user.tab({ shift: true }); expect(screen.getByRole("button", { name: "New objective" })).toHaveFocus();
+    await user.keyboard("{Enter}"); expect(screen.getByLabelText("Bounded objective")).toHaveFocus();
+    await user.keyboard(saved.objectives[0].title);
+    await user.tab(); expect(screen.getByLabelText(/Criterion:/)).toHaveFocus();
+    await user.keyboard(saved.objectives[0].criterion);
+    await user.tab(); expect(screen.getByRole("button", { name: "Save objective" })).toHaveFocus();
+    await user.keyboard("{Enter}"); await screen.findByText("Objective and criterion saved on this device.");
+    await user.tab(); expect(screen.getByRole("button", { name: "Add next action" })).toHaveFocus();
+    await user.keyboard("{Enter}"); expect(screen.getByLabelText("Next action: what will you do?")).toHaveFocus();
+    await user.keyboard(saved.actions[0].description);
+    await user.tab(); expect(screen.getByLabelText(/Stop condition:/)).toHaveFocus();
+    await user.keyboard(saved.actions[0].stop_condition);
+    await user.tab(); expect(screen.getByLabelText(/Resumption note/)).toHaveFocus();
+    await user.keyboard(saved.notes[0].text);
+    await user.tab(); expect(screen.getByRole("button", { name: "Save next action and note" })).toHaveFocus();
+    await user.keyboard("{Enter}"); await screen.findByText("Next action and note saved on this device.");
+    expect(api.saveWork).toHaveBeenCalledWith({ expected_generation: "objective-generation", objective_id: objectiveId, description: saved.actions[0].description, stop_condition: saved.actions[0].stop_condition, note: saved.notes[0].text });
+    cleanup(); await ready();
+    expect(screen.getByRole("heading", { name: saved.actions[0].description })).toBeInTheDocument();
+    expect(screen.getByText(saved.notes[0].text)).toBeInTheDocument();
+    expect(screen.getByLabelText("Parent objective")).toHaveValue(objectiveId);
+    expect(api.loadWorkspace).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["overlong", "x".repeat(121), "Project name must be 120 characters or fewer."],
+    ["null-containing", "Sample\0project", "Project name cannot contain a null character."],
+  ])("retains %s input for correction and blocks the native mutation", async (_kind, value, message) => {
+    const user = userEvent.setup({ delay: null }); await ready();
+    await user.click(screen.getByRole("button", { name: "New project" }));
+    await user.paste(value);
+    await user.keyboard("{Enter}");
+    expect(await screen.findByRole("alert")).toHaveTextContent(message);
+    expect(screen.getByLabelText("Project name")).toHaveFocus();
+    expect(screen.getByLabelText("Project name")).toHaveValue(value);
+    expect(api.createProject).not.toHaveBeenCalled();
+  });
+
+  it("retains a draft when a discard-confirmed reload fails, then allows retry", async () => {
+    vi.mocked(api.loadWorkspace).mockRejectedValueOnce({ code: "storage_error", message: "Records could not be read." }).mockResolvedValue(saved);
+    const user = userEvent.setup({ delay: null }); render(<App />);
+    await user.click(await screen.findByRole("button", { name: "Retry connection" }));
+    const input = await editAction(user); await user.type(input, " retained draft");
+    vi.mocked(api.loadWorkspace).mockRejectedValueOnce({ code: "storage_error", message: "Records could not be read." });
+    await user.click(screen.getByRole("button", { name: "Reload saved records" }));
+    await user.click(screen.getByRole("button", { name: "Discard draft and continue" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Records could not be read.");
+    expect(input).toHaveValue(`${saved.actions[0].description} retained draft`);
+    expect(screen.getByRole("heading", { name: saved.actions[0].description })).toBeInTheDocument();
+    await user.click(screen.getAllByRole("button", { name: "Reload saved records" })[0]);
+    await user.keyboard("{Escape}"); expect(input).toHaveFocus();
+  });
+
+  it("explains a stale import preview without modifying the saved workspace", async () => {
+    vi.mocked(api.previewImport).mockResolvedValue(incoming);
+    vi.mocked(api.restoreImport).mockRejectedValue({ code: "conflict", message: "The local workspace changed." });
+    const user = userEvent.setup({ delay: null }); await ready();
+    await user.click(screen.getByRole("button", { name: "Import records" }));
+    await user.click(await screen.findByRole("button", { name: "Replace local records" }));
+    const dialog = screen.getByRole("dialog", { name: "Review import" });
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Cancel and preview the file again to review the latest local records.");
+    expect(screen.getByRole("heading", { name: saved.actions[0].description })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Import records" })).toHaveFocus();
+  });
+
+  it("exports only saved records, preserves a draft, and reports export failures visibly", async () => {
+    vi.mocked(api.exportWorkspace).mockResolvedValueOnce({ file_name: "synthetic-records.json" })
+      .mockRejectedValueOnce({ code: "storage_error", message: "The export could not be written." });
+    const user = userEvent.setup({ delay: null }); await ready();
+    const input = await editAction(user); await user.type(input, " draft");
+    await user.click(screen.getByRole("button", { name: "Export records" }));
+    expect(await screen.findByText("Saved records exported to synthetic-records.json.")).toBeInTheDocument();
+    expect(input).toHaveValue(`${saved.actions[0].description} draft`);
+    expect(api.saveWork).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Export records" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("The export could not be written.");
+    expect(input).toHaveValue(`${saved.actions[0].description} draft`);
+    expect(screen.queryByText("Saved records exported to synthetic-records.json.")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: saved.actions[0].description })).toBeInTheDocument();
+  });
 });
