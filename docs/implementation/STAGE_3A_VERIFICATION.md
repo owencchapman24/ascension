@@ -1,8 +1,113 @@
 # Stage 3a implementation verification
 
-This log records executed checks, not assumed outcomes. All examples and test records are synthetic. The engineering review below supersedes the earlier acceptance summary; the historical checkpoints remain evidence for their specifically recorded builds.
+This log records executed checks, not assumed outcomes. All examples and test records are synthetic. The verification closure is the current record; earlier reviews and acceptance checkpoints remain historical evidence for their specifically recorded builds and conditions.
 
-## Engineering review — 2026-10-19
+## Verification closure — 2026-10-19
+
+This closure addresses the native export/import verification gap recorded in the earlier conditional review. The starting point was clean commit `cb8ca46` on `feat/stage-3a-offline-work`. No production application code or dependencies changed during this closure. Changes are confined to verification tooling and documentation; no Stage 3b implementation, framework change, push, or merge is included. Only synthetic records and dedicated repository-local disposable installations/profiles are used. The normal application profile and existing user data are not opened or modified.
+
+The public Stage 3a specifications, architecture boundaries, and ADRs remain the review basis. The public reference to later Phase 5 boundaries does not authorize importing or inspecting the original private research package; that package was not read.
+
+### Repeated automated checks
+
+These checks ran during this closure, rather than being inferred from the previous review. Commands run from the repository root with the existing Rust toolchain available on the process PATH.
+
+| Exact command/check | Executed result |
+| --- | --- |
+| `git status --short` | Clean starting point at `cb8ca46` |
+| `npm.cmd test` | Passed: 30 tests, comprising 24 Work UI and 6 typed-client tests; no ignored tests |
+| `npm.cmd run typecheck` | Passed |
+| `npm.cmd run build` | Passed; 19 modules transformed; generated JavaScript 236.51 kB and CSS 4.52 kB |
+| `cargo test --manifest-path src-tauri/Cargo.toml --locked --offline` | Passed: 37 tests, comprising 10 command/service tests and 27 real temporary-SQLite integration tests |
+| `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` | Passed |
+| `cargo clippy --manifest-path src-tauri/Cargo.toml --locked --offline --all-targets -- -D warnings` | Passed |
+| `node --check scripts/native-regression.mjs`; `node --check scripts/native-offline.mjs` | Passed |
+| PowerShell AST parse of `scripts/native-dialog.ps1` and `scripts/verify-native.ps1`; `git diff --check` | Passed |
+
+The UI suite continues to mock the command boundary; its passing result is not treated as proof of native file selection or SQLite durability. The real SQLite suite supplies transactional, migration, corruption, conflict, and recovery evidence. Native coverage below exercises the installed application separately.
+
+### Native automation diagnosis and bounded fallback
+
+The computer-use runtime was retried with trivial JavaScript before importing `@oai/sky`. It still failed while writing kernel assets with Windows `os error 3`. This locates the observed failure in the automation runtime's bootstrap environment, before the package import or any native input. The failing internal asset path was not exposed, so a more specific filesystem diagnosis cannot be established from the available error. No machine-wide repair, installation, security change, or user QA task was requested.
+
+The fallback keeps the existing installed-WebView2 CDP harness and adds `scripts/native-dialog.ps1`. UI Automation located the actual Windows common dialog (`#32770`) by the isolated application's process ID and exact dialog title, but did not expose its classic edit/button controls. An attempted provider registration returned a `NullReference` error. The helper therefore uses standard Win32 controls observed on those same dialogs: Save file-name edit ID `1001`, Open file-name edit ID `1148`, confirmation button ID `1`, and cancellation button ID `2`. `WM_SETTEXT` fills the real file-name field and `BM_CLICK` activates the actual Save/Open/Cancel button. It does not replace the file dialog, call a test-only application command, or inject a file path into the renderer.
+
+The helper checks the dedicated run directory/configuration, installed executable path, application PID, dialog title/class, control class/ID, visibility/enabled state, and control ownership. Selected files stay within the disposable run. Native calls and the helper subprocess have bounded waits. `scripts/native-regression.mjs` continues to verify the actual app-data directory and isolated application identifier before exercising the workspace. Generated profiles, files, screenshots, and raw results remain ignored under `.artifacts/`.
+
+This establishes an automation route for the real Windows dialogs. It does **not** establish keyboard navigation or screen reader operation inside those dialogs: field entry there is programmatic Win32 control input. WebView2 forms and application modals have separate Tab/Return/Shift+Tab/Escape checks.
+
+### Native scenarios and intermediate results
+
+Intermediate probes reused the same disposable installed package with run prefix `8cdf`. They exercised actual Save/Open selection and cancellation, versioned export, import preview and cancellation, explicit replacement, identical replay, rejected imports, and backup recovery. Assertions compare full record sets, stable IDs, relationships, revisions, selection, generation where applicable, and backup contents/counts.
+
+The extended regression includes:
+
+- Exporting the created workspace through the Windows Save dialog and comparing its versioned contents with the real native workspace.
+- Canceling native Save/Open dialogs without adding files, backups, or workspace mutations; canceling a preview after verifying both local and incoming counts.
+- Editing all record types, previewing an older export with the same identities, and explicitly replacing the local records while preserving an exact recovery backup.
+- Killing the disposable application while an import is only previewed, reopening it, and confirming unchanged saved records and a fresh preview path.
+- Replaying an identical import without new generation changes, duplicate records, or another backup.
+- Rejecting malformed JSON, unsupported versions, duplicate IDs across record types, dangling references, oversized files, and an export destination inside the app-data directory, while preserving valid records.
+- Importing a real pre-restore backup through the native dialog; making the disposable backup destination temporarily unavailable, checking that replacement fails without data loss, then repairing only the synthetic fixture and retrying.
+- Restoring an empty record set, restoring the original into that empty workspace, and checking exact identity/revision recovery before orderly and abrupt restart checks.
+
+An intermediate native run reached the final empty-workspace restoration assertion. That assertion incorrectly expected four backups; the application correctly created five, one for each changed restore, including replacement of an empty workspace. The expectation was corrected to five. This was a test-harness defect, with no production code change. The first selection helper also assumed Save and Open shared an edit-control ID; inspection established their different IDs and corrected the helper. These failed probes are not application failures or end-to-end passes.
+
+A fresh full wrapper run subsequently passed **20 installed-application checkpoints**, including **19 actual Windows dialog interactions** (3 Save selections, 14 Open selections, and one cancellation of each). This count includes four separately verified native launches. Native cancellation also checks that Tab reaches an enabled application control afterward. No new application defect was found; the startup-retry and editor-focus fixes from `cb8ca46` remain covered by the passing suites.
+
+### Offline verification and final evidence
+
+The existing process-scoped refused-proxy setup remains independently checked on the actual WebView2 child. New `scripts/native-offline.mjs` tests stronger WebView2 offline emulation against a temporary server owned by the harness on loopback, with unique uncached responses and the real native workspace command. No external service or network adapter/firewall change is involved.
+
+The first framed resource probe was blocked by the application's CSP, so it could not establish network denial. Retrying without a frame identifier was rejected because the CDP resource method requires one. On a temporary owned loopback document, the DevTools resource loader reached the server even with offline emulation enabled. These diagnostic attempts did **not** establish offline behavior; the helper restored the app and confirmed its saved records were unchanged. Production CSP was never weakened.
+
+The final probe uses ordinary renderer `fetch` on that script-free, owned document, with a five-second timeout and uncached unique request paths. On **all four launches**, the positive control returned HTTP 200 with the exact expected body, reported `navigator.onLine === true`, and reached the server. After `Network.emulateNetworkConditions` enabled offline mode, the negative request failed with `TypeError: Failed to fetch`, reported `navigator.onLine === false`, and did **not** reach the server. The native app then reloaded from `http://tauri.localhost/` while offline and returned the exact pre-probe workspace through Rust IPC. Offline emulation remained enabled throughout creation, editing, native export/import, failures, backups, and the subsequent lifecycle checks; each new process repeated the probe. All 20 checkpoints and 19 native dialog interactions passed again.
+
+This is direct evidence of renderer request denial, app reload, native IPC, and application workflows under target-scoped offline emulation. The refused proxy also remains set from initial process launch. It is not an OS-wide or Rust-process network-denial test: neither a network adapter nor firewall was changed, and no external host was contacted. Source inspection continues to show local Rust persistence with no AI/API/cloud dependency. The earlier resource-loader-only full run is preserved under the final run's ignored `resource-loader-probe/` directory and is not counted as stronger offline evidence.
+
+Repeatable entry points are `scripts/verify-native.ps1`, `scripts/native-regression.mjs`, `scripts/native-dialog.ps1`, and `scripts/native-offline.mjs`. The package wrapper builds with `npm.cmd run tauri -- build --config <generated-config> -- --locked --offline`, installs its uniquely identified package into the generated run directory, runs `node scripts/native-regression.mjs <isolated-run-directory>`, and invokes that installation's own uninstaller. Where the existing PowerShell execution policy blocks direct `.ps1` invocation, the reviewed repository-local wrapper is executed without changing that policy:
+
+```powershell
+& ([scriptblock]::Create((Get-Content -LiteralPath scripts/verify-native.ps1 -Raw))) -Repository (Get-Location).Path
+```
+
+After refining only the offline helper, the same package was reinstalled into a fresh synthetic profile, using these commands from the repository root (the previous synthetic profile/exports/results were first moved into `resource-loader-probe/`, with source/destination containment checked):
+
+```powershell
+$run = Join-Path (Get-Location).Path '.artifacts\native-499aa461b5c04cde92ccdd715efe65ba'
+$installed = Join-Path $run 'installed'
+$package = Join-Path (Get-Location).Path 'src-tauri\target\release\bundle\nsis\Ascension Verification 499aa461_0.1.0_x64-setup.exe'
+$installer = Start-Process -FilePath $package -ArgumentList @('/S', "/D=$installed") -WindowStyle Hidden -Wait -PassThru
+node scripts/native-regression.mjs $run
+# Executed in finally after recording installer/executable hashes:
+$removed = Start-Process -FilePath (Join-Path $installed 'uninstall.exe') -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru
+```
+
+Install, regression and uninstall all exited 0. `Get-FileHash -Algorithm SHA256` confirmed the installer and installed executable hashes below were unchanged by the replay. Use the full wrapper for a repeatable fresh run; the replay commands above record this specific execution, not an instruction to reuse an existing profile.
+
+| Final closure evidence | Executed result |
+| --- | --- |
+| Full wrapper command and native regression count | Exit 0; release compilation 2m09s; 20 checkpoints and 19 native dialog interactions passed |
+| Final tested package/source identity | `Ascension Verification 499aa461_0.1.0_x64-setup.exe`, version 0.1.0, 2,253,613 bytes; production source `cb8ca46`, with only unique product/identifier/app-directory configuration overrides |
+| Installer SHA256 | `DD2D35B005521A4FAD3BEC98582014DBBB8036089510B23DE09E2B38C3F37C38` |
+| Installed executable SHA256 | `89C6CAA8E9BE0E26154CF116C3D416022D0E10DA2C295A181D3A001167C847A5` |
+| Native file-dialog evidence | Real Save/Open/Cancel controls and real Rust commands; `.artifacts/native-499aa461b5c04cde92ccdd715efe65ba/` contains `native-result.json`, `package-result.json`, `work-view.png`, synthetic exports and profile/backups; all ignored by Git |
+| Final offline evidence | 4/4 positive/negative renderer probes passed; native app reloaded offline with exact workspace; subsequent native workflows passed while offline |
+| Install, close, uninstall, and process cleanup | Silent install and own uninstaller exit 0 for both final runs; orderly close and scoped process kill/restart pass; installed executable absent after cleanup; 0 Ascension processes remain |
+| Screenshot inspection | `work-view.png` inspected: original restored action, stop condition, and note are visible and readable without overlapping controls |
+| Final validation/diff checks | JavaScript syntax and both PowerShell AST parses pass; `git diff --check` passes; only scripts/documentation are staged after full diff review |
+
+The normal configuration was separately rebuilt with `npm.cmd run tauri -- build -- --locked --offline`: exit 0, release compilation 2m17s. `Ascension_0.1.0_x64-setup.exe` is 2,252,995 bytes, SHA256 `7FAC53163F59AB70B6A0D9258C92332184D3874C3A68AB3A2DB964FAC2C8E114`, Authenticode `NotSigned`. It was not installed or launched; runtime evidence comes from the uniquely configured package of the same production source above.
+
+### Closure recommendation and remaining limits
+
+**Recommendation: PASS for Stage 3a.** Essential creation/editing, durable restart, versioned identity-preserving native export/import, explicit replacement, safe rejection, backup recovery, and keyboard application flows are verified against the current production source. The real-SQLite migration/transaction/corruption suite and current Windows package checks also pass. No material Stage 3a data-integrity or architecture defect remains confirmed. Rust retains persistence/validation/transaction/file authority; the renderer receives typed commands, with no general SQL, shell, or filesystem capability. No speculative Stage 3b framework was added.
+
+The branch is ready for review and merge. The engineering gate for Stage 3b is satisfied; implementation still requires the repository owner's separate authorization. No push, merge, publication, release, or Stage 3b work was performed.
+
+Remaining limits: native Windows file-dialog keyboard/screen reader operation is not verified by Win32 control automation; network denial is scoped to the tested WebView2 target rather than the Rust process or operating system; abrupt termination tests cover unconfirmed import previews and acknowledged writes, not physical power loss or interruption at an arbitrary mid-commit instruction; the installer is unsigned and requires preinstalled WebView2; backups are local and unpruned. The normal user profile was intentionally not opened. These limits do not negate the essential Stage 3a workflows demonstrated above. No routine testing has been delegated to the user.
+
+## Historical engineering review — 2026-10-19
 
 Review began October 18 and concluded October 19 (America/New_York). Reviewed the completed implementation from clean commit `c378ee5` on `feat/stage-3a-offline-work`, against Stage 3a, the architecture boundaries, and ADRs 0001/0002. No Stage 3b work, framework change, network feature, dependency update, push, or merge was performed. Only synthetic temporary databases and uniquely identified disposable installed profiles were used; the normal installed app and its data were not opened.
 

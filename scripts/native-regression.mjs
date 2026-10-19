@@ -1,13 +1,14 @@
 // Drives the actual installed WebView2 renderer over loopback CDP, using Node 22 only.
-// No mocked commands or test-only application APIs. Native file dialogs are excluded.
+// Native file dialogs use the bounded Windows helper; all persistence uses real commands.
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
 import { once } from 'node:events';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, readdir, rename, unlink, stat } from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
+import { verifyOffline } from './native-offline.mjs';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const root = path.resolve(process.argv[2] ?? '');
@@ -17,6 +18,8 @@ assert.equal(config.app.appDirectoriesOverride, path.join(root, 'profile'));
 assert.match(config.identifier, /^io\.ascension\.verification\.r[0-9a-f]{32}$/);
 const executable = path.join(root, 'installed', 'ascension.exe');
 const checks = [];
+const dialogs = [];
+const offline = [];
 let application;
 let client;
 
@@ -79,6 +82,49 @@ const js = JSON.stringify;
 const focused = () => evaluate('document.activeElement?.id || document.activeElement?.textContent?.trim()');
 const workspace = () => evaluate("window.__TAURI_INTERNALS__.invoke('load_workspace')");
 const notice = text => until(() => evaluate(`Array.from(document.querySelectorAll('[role=status]')).some(e => e.textContent.includes(${js(text)}))`), text);
+function nativeDialog(title, action = 'Inspect', selectedPath = '') {
+  const output = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    '& ([scriptblock]::Create([IO.File]::ReadAllText($env:ASCENSION_NATIVE_DIALOG_SCRIPT))) -RunRoot $env:ASCENSION_NATIVE_RUN_ROOT -Repository $env:ASCENSION_NATIVE_REPOSITORY -ApplicationId $env:ASCENSION_NATIVE_PID -Title $env:ASCENSION_NATIVE_TITLE -Action $env:ASCENSION_NATIVE_ACTION -SelectedPath $env:ASCENSION_NATIVE_PATH'], {
+    windowsHide: true, encoding: 'utf8', timeout: 25000,
+    env: { ...process.env, ASCENSION_NATIVE_DIALOG_SCRIPT: path.join(repository, 'scripts', 'native-dialog.ps1'),
+      ASCENSION_NATIVE_RUN_ROOT: root, ASCENSION_NATIVE_REPOSITORY: repository, ASCENSION_NATIVE_PID: String(application.pid), ASCENSION_NATIVE_TITLE: title,
+      ASCENSION_NATIVE_ACTION: action, ASCENSION_NATIVE_PATH: selectedPath },
+  });
+  if (action !== 'Inspect') dialogs.push(JSON.parse(output));
+  return output;
+}
+const recordSet = value => ({ format: 'ascension-records', schema_version: 1,
+  selected_objective_id: value.selected_objective_id,
+  ...Object.fromEntries(['projects', 'objectives', 'actions', 'notes'].map(key => [key, [...value[key]].sort((a, b) => a.id.localeCompare(b.id))])) });
+const backupsRoot = path.join(root, 'profile', 'backups');
+async function backups() {
+  try { return (await readdir(backupsRoot)).filter(name => name.endsWith('.json')).sort(); }
+  catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+}
+const ready = () => until(() => evaluate("Array.from(document.querySelectorAll('button')).some(e => e.textContent === 'Import records' && !e.matches(':disabled'))"), 'file command completed');
+async function exportFile(name) {
+  const target = path.join(root, name);
+  await clickButton('Export records');
+  nativeDialog('Export saved Ascension records', 'Select', target);
+  await notice(`Saved records exported to ${name}.`);
+  return JSON.parse(await readFile(target, 'utf8'));
+}
+async function previewFile(target, current, incoming) {
+  await clickButton('Import records');
+  nativeDialog('Preview an Ascension export', 'Select', target);
+  await until(() => evaluate("document.querySelector('[role=dialog]')?.getAttribute('aria-label') === 'Review import'"), 'native import preview');
+  assert.deepEqual(await workspace(), current, 'Preview cannot change saved state or generation');
+  const rows = await evaluate("Array.from(document.querySelectorAll('[role=dialog] tbody tr')).map(row => Array.from(row.querySelectorAll('td')).map(cell => Number(cell.textContent)))");
+  assert.deepEqual(rows, ['projects', 'objectives', 'actions', 'notes'].map(key => [current[key].length, incoming[key].length]));
+  assert.ok(await evaluate("document.querySelector('[role=dialog]').textContent.includes('Records missing from the file will be removed.')"));
+  assert.equal(await focused(), 'Cancel import');
+}
+async function restoreFile(target, current, incoming) {
+  await previewFile(target, current, incoming);
+  await clickButton('Replace local records');
+  await until(() => evaluate("!document.querySelector('[role=dialog]')"), 'restore completion');
+  assert.deepEqual(recordSet(await workspace()), incoming);
+}
 async function key(key, code, windowsVirtualKeyCode, modifiers = 0) {
   await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode, modifiers,
     ...(key === 'Enter' ? { text: '\r', unmodifiedText: '\r' } : {}) });
@@ -129,11 +175,16 @@ async function launch() {
   client = await connect(page.webSocketDebuggerUrl);
   await until(() => evaluate("document.querySelector('#work-heading')?.textContent === 'Work'"), 'Rust-backed Work view');
   assert.equal(await evaluate("window.__TAURI_INTERNALS__.invoke('plugin:app|identifier')"), config.identifier);
+  const actualDataPath = await evaluate("window.__TAURI_INTERNALS__.invoke('plugin:path|resolve_directory', {directory:14})");
+  assert.equal(path.resolve(actualDataPath).toLowerCase(), path.join(root, 'profile').toLowerCase(), 'Actual native app-data path must be isolated');
   const args = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
     `$items = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = ${application.pid}"); if (!$items.Count) { throw 'WebView2 child missing' }; $text = ($items | ForEach-Object { $_.CommandLine }) -join ' '; [bool]($text.Contains('--proxy-server=http://127.0.0.1:9') -and $text.Contains('tauri.localhost;ipc.localhost'))`],
   { windowsHide: true, encoding: 'utf8' }).trim();
   assert.equal(args, 'True', 'Verify offline proxy flags on actual child process');
-  checks.push('Native launch: isolated identifier, Rust workspace, and WebView2 proxy flags verified');
+  const evidence = await verifyOffline(client);
+  offline.push(evidence);
+  assert.ok(evidence.supported || (evidence.restoredOnlineMode && evidence.restoredApplication && evidence.restoredWorkspaceUnchanged), 'Unsupported offline emulation must restore the original application and workspace safely');
+  checks.push('Native launch: actual app-data directory, isolated identifier, Rust workspace, and WebView2 proxy flags verified');
 }
 
 try {
@@ -170,6 +221,23 @@ try {
   assert.equal(created.notes[0].objective_id, created.objectives[0].id);
   assert.equal(created.notes[0].text, 'Resume with the synthetic materials list.');
   checks.push('Keyboard create/save: project, objective/criterion, next action/stop condition and resumption note');
+
+  const original = await exportFile('original.json');
+  assert.deepEqual(original, recordSet(created));
+  checks.push('Actual Windows Save dialog exports exact versioned data, relationships, IDs, revisions and selection');
+  const filesBeforeCancel = (await readdir(root)).sort();
+  for (const [button, title] of [['Export records', 'Export saved Ascension records'], ['Import records', 'Preview an Ascension export']]) {
+    await clickButton(button);
+    nativeDialog(title, 'Cancel');
+    await ready();
+    assert.deepEqual(await workspace(), created);
+    assert.equal(await evaluate("document.querySelector('[role=dialog]')"), null);
+    await tab();
+    assert.ok(await evaluate("document.activeElement?.matches('button:not(:disabled), select:not(:disabled), input:not(:disabled), textarea:not(:disabled)')"), 'Tab remains usable after native dialog cancellation');
+  }
+  assert.deepEqual((await readdir(root)).sort(), filesBeforeCancel);
+  assert.deepEqual(await backups(), []);
+  checks.push('Cancel actual Windows Save/Open dialogs: no files, backups or workspace/generation changes');
 
   await clickButton('Edit project');
   await typeAt('project-title', 'Synthetic native review edited');
@@ -217,24 +285,128 @@ try {
   assert.deepEqual(await workspace(), edited);
   checks.push('Visible validation; modal Tab/Shift+Tab containment, Escape, guarded discard, replacement-editor focus; saved records unchanged');
 
+  // A second local project makes the replacement/removal counts observable.
+  await clickButton('New project');
+  await typeAt('project-title', 'Synthetic project removed by restore');
+  await tab(); await enter(); await notice('Project saved');
+  const modified = await workspace();
+  const modifiedRecords = recordSet(modified);
+  const originalPath = path.join(root, 'original.json');
+  await previewFile(originalPath, modified, original);
+  await clickButton('Cancel import');
+  assert.deepEqual(await workspace(), modified);
+  assert.deepEqual(await backups(), []);
+  checks.push('Actual Open dialog preview reports 2/1/1/1 local versus 1/1/1/1 incoming; cancel preview preserves state');
+
+  // Simulate interruption before confirmation, without guessing a SQLite commit boundary.
+  await previewFile(originalPath, modified, original);
+  application.kill();
+  await until(() => application.exitCode !== null || application.signalCode !== null, 'interrupted preview exit');
+  client.close();
+  await launch();
+  assert.deepEqual(await workspace(), modified);
+  assert.equal(await evaluate("document.querySelector('[role=dialog]')"), null);
+  assert.deepEqual(await backups(), []);
+  checks.push('Interrupted native import preview: restart retains exact pre-import state and permits a fresh preview');
+
+  await restoreFile(originalPath, modified, original);
+  const restored = await workspace();
+  assert.notEqual(restored.generation, modified.generation);
+  const recoveryFiles = await backups();
+  assert.equal(recoveryFiles.length, 1);
+  const recoveryPath = path.join(backupsRoot, recoveryFiles[0]);
+  assert.deepEqual(JSON.parse(await readFile(recoveryPath, 'utf8')), modifiedRecords);
+  assert.deepEqual(await exportFile('restored.json'), original);
+  checks.push('Confirmed native restore preserves exact records/IDs/relationships/revisions; backup equals displaced records; native re-export matches');
+  await restoreFile(originalPath, restored, original);
+  assert.deepEqual(await workspace(), restored);
+  assert.deepEqual(await backups(), recoveryFiles);
+  await notice('already matches');
+  checks.push('Identical native import replay is a no-op: unchanged generation, records and backup count');
+
+  const invalid = [
+    ['malformed.json', '{"format":', 'valid'],
+    ['unsupported.json', JSON.stringify({ ...original, schema_version: 99 }), 'not supported'],
+    ['conflicting-ids.json', JSON.stringify({ ...original, notes: [{ ...original.notes[0], id: original.actions[0].id }] }), 'unique'],
+    ['dangling-reference.json', JSON.stringify({ ...original, objectives: [{ ...original.objectives[0], project_id: original.actions[0].id }] }), 'missing project'],
+    ['oversized.json', ' '.repeat(10 * 1024 * 1024 + 1), '10 MiB'],
+  ];
+  for (const [name, contents, expectedError] of invalid) {
+    const target = path.join(root, name);
+    await writeFile(target, contents, 'utf8');
+    await clickButton('Import records');
+    nativeDialog('Preview an Ascension export', 'Select', target);
+    await until(() => evaluate(`Array.from(document.querySelectorAll('[role=alert]')).some(e => e.textContent.includes(${js(expectedError)}))`), `reject ${name}`);
+    await ready();
+    assert.deepEqual(await workspace(), restored);
+    assert.deepEqual(await backups(), recoveryFiles);
+    assert.equal(await evaluate("document.querySelector('[role=dialog]')"), null);
+  }
+  checks.push('Actual Open dialog rejects malformed, future-version, duplicate-ID, dangling-reference and oversized files without mutations/backups');
+
+  const protectedExport = path.join(root, 'profile', 'forbidden.json');
+  await clickButton('Export records');
+  nativeDialog('Export saved Ascension records', 'Select', protectedExport);
+  await until(() => evaluate("document.querySelector('[role=alert]')?.textContent.includes('outside Ascension')"), 'protected export rejection');
+  await assert.rejects(stat(protectedExport), { code: 'ENOENT' });
+  assert.deepEqual(await workspace(), restored);
+  checks.push('Actual Save dialog rejects an application-data destination without creating a file or changing records');
+
+  // Restore a real recovery backup through the same native Open/preview/replace path.
+  await restoreFile(recoveryPath, restored, modifiedRecords);
+  const recovered = await workspace();
+  assert.equal((await backups()).length, 2);
+  checks.push('A real pre-import recovery backup restores the displaced workspace through the native Open dialog');
+
+  // A disposable file blocks backup-directory creation; valid records must survive.
+  const heldBackups = path.join(root, 'profile', 'backups-held');
+  await rename(backupsRoot, heldBackups);
+  let blockerCreated = false;
+  try {
+    await writeFile(backupsRoot, 'Synthetic backup failure fixture', { flag: 'wx' });
+    blockerCreated = true;
+    await previewFile(originalPath, recovered, original);
+    await clickButton('Replace local records');
+    await until(() => evaluate("document.querySelector('[role=alert]')?.textContent.includes('recovery backup could not be saved')"), 'failed backup rejection');
+    assert.deepEqual(await workspace(), recovered);
+    await clickButton('Cancel import');
+  } finally {
+    try { if (blockerCreated) await unlink(backupsRoot); }
+    finally { await rename(heldBackups, backupsRoot); }
+  }
+  assert.equal((await backups()).length, 2);
+  await restoreFile(originalPath, recovered, original);
+  assert.equal((await backups()).length, 3);
+  checks.push('Failed import backup preserves exact local state; repairing only the disposable fixture allows fresh native preview/restore');
+
+  const empty = { ...original, selected_objective_id: null, projects: [], objectives: [], actions: [], notes: [] };
+  const emptyPath = path.join(root, 'empty.json');
+  await writeFile(emptyPath, JSON.stringify(empty), 'utf8');
+  await restoreFile(emptyPath, await workspace(), empty);
+  assert.equal((await backups()).length, 4);
+  await restoreFile(originalPath, await workspace(), original);
+  assert.equal((await backups()).length, 5, 'Every changed restore preserves the previous record set, including an empty one');
+  checks.push('Native import into an empty workspace preserves original stable IDs/revisions and selection');
+  const finalWorkspace = await workspace();
+
   const shot = await client.send('Page.captureScreenshot', { format: 'png' });
   await writeFile(path.join(root, 'work-view.png'), Buffer.from(shot.data, 'base64'));
   await closeApplication();
   await launch();
-  assert.deepEqual(await workspace(), edited);
-  assert.ok(await evaluate("document.querySelector('.saved-action')?.textContent.includes('Write the revised example step.')"));
-  assert.ok(await evaluate("document.querySelector('.saved-note')?.textContent.includes('Resume with the revised synthetic materials list.')"));
-  checks.push('Graceful native close/reopen under proxy-blocked simulation: exact workspace/selection/IDs/revisions and immediate visible action/note');
+  assert.deepEqual(await workspace(), finalWorkspace);
+  assert.ok(await evaluate("document.querySelector('.saved-action')?.textContent.includes('Write the first example step.')"));
+  assert.ok(await evaluate("document.querySelector('.saved-note')?.textContent.includes('Resume with the synthetic materials list.')"));
+  checks.push('Graceful native close/reopen after restore: exact workspace/selection/IDs/revisions and immediate visible original action/note');
   // An abrupt stop additionally verifies recovery of an acknowledged SQLite commit.
   application.kill();
   await until(() => application.exitCode !== null || application.signalCode !== null, 'abrupt stop');
   client.close();
   await launch();
-  assert.deepEqual(await workspace(), edited);
+  assert.deepEqual(await workspace(), finalWorkspace);
   checks.push('Abrupt process stop/reopen retains the exact last acknowledged workspace');
   await closeApplication();
-  await writeFile(path.join(root, 'native-result.json'), JSON.stringify({ passed: true, checks,
-    limitations: ['Native file dialogs are not driven by CDP.', 'Offline simulation blocks WebView2 via a refused proxy; no OS-wide or Rust networking denial.'] }, null, 2));
+  await writeFile(path.join(root, 'native-result.json'), JSON.stringify({ passed: true, checks, dialogs, offline,
+    limitations: ['Offline denial is scoped to WebView2; Rust/OS-wide networking is not blocked.', 'Interruption tested before import confirmation and after acknowledged writes, not during a physical power failure.'] }, null, 2));
   console.log(`PASS: ${checks.length} installed WebView2 lifecycle checks`);
 } catch (error) {
   if (client) {
@@ -244,7 +416,7 @@ try {
       await writeFile(path.join(root, 'failure-ui.json'), JSON.stringify(await evaluate('({text:document.body.innerText, focus:document.activeElement?.outerHTML})'), null, 2));
     } catch { /* Preserve the original failure if the renderer is already gone. */ }
   }
-  await writeFile(path.join(root, 'native-result.json'), JSON.stringify({ passed: false, checks, failure: error.message }, null, 2));
+  await writeFile(path.join(root, 'native-result.json'), JSON.stringify({ passed: false, checks, dialogs, offline, failure: error.message }, null, 2));
   throw error;
 } finally {
   client?.close();
