@@ -13,6 +13,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { verifyOffline } from './native-offline.mjs';
 import { verifyProgress } from './native-progress.mjs';
 import { verifyStudy } from './native-study.mjs';
+import { verifyWorld } from './native-world.mjs';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const root = path.resolve(process.argv[2] ?? '');
@@ -108,13 +109,16 @@ function portableStudy(value) {
   assert.equal(study.manifests.length, 0, 'Use complete exports for study-history comparisons');
   return study;
 }
-const recordSet = value => ({ format: 'ascension-records', schema_version: 3,
+const recordSet = value => ({ format: 'ascension-records', schema_version: 4,
   selected_objective_id: value.selected_objective_id,
   ...Object.fromEntries(['projects', 'objectives', 'actions', 'notes'].map(key => [key, [...value[key]].sort((a, b) => a.id.localeCompare(b.id))])),
-  progress: value.progress, study: portableStudy(value.study) });
+  progress: value.progress, study: portableStudy(value.study), world: value.world });
 const counts = value => [...['projects', 'objectives', 'actions', 'notes'].map(key => value[key].length),
   ...['criteria', 'evidence', 'snapshots', 'acceptances', 'corrections', 'grants', 'ledger', 'commands'].map(key => value.progress[key].length), value.progress.wallet_bc,
-  ...['epochs','manifests','opportunities','assignments','outcomes','exposures','burdens','reflections'].map(key=>value.study[key].length)];
+  ...['epochs','manifests','opportunities','assignments','outcomes','exposures','burdens','reflections'].map(key=>value.study[key].length),
+  value.world.commands.length, value.world.spending.length, value.world.chapter?.layout.length ?? 0,
+  value.world.chapter?.queue?.reserved_bc ?? 0, value.world.spending.reduce((sum,row)=>sum+row.amount_bc,0),
+  value.world.chapter?.funded_site_count ?? 0, value.world.chapter?.completion ? 1 : 0];
 const emptyProgress = () => ({registry_revision:0,parents:[],slots:[],criteria:[],evidence:[],validators:[],snapshots:[],acceptances:[],corrections:[],grants:[],ledger:[],audit:[],commands:[],wallet_bc:0});
 const backupsRoot = path.join(root, 'profile', 'backups');
 async function backups() {
@@ -186,6 +190,17 @@ async function closeApplication() {
   assert.equal(result.trim(), '');
   await until(() => application.exitCode !== null || application.signalCode !== null, 'native app exit');
   client?.close();
+}
+async function resizeWindow(width, height) {
+  assert.ok(width >= 640 && height >= 600, 'Respect the application minimum window dimensions');
+  assert.ok(application && application.exitCode === null, 'Only the owned live verification process may be resized');
+  execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    'Add-Type -TypeDefinition $env:ASCENSION_VERIFY_WINDOW_TYPE; $p = Get-Process -Id ([int]$env:ASCENSION_VERIFY_PID) -ErrorAction Stop; if (![AscensionVerifyWindow]::SetWindowPos($p.MainWindowHandle, [IntPtr]::Zero, 0, 0, [int]$env:ASCENSION_VERIFY_WIDTH, [int]$env:ASCENSION_VERIFY_HEIGHT, 22)) { throw "Verification window resize failed" }'], {
+    windowsHide: true, encoding: 'utf8', timeout: 15000,
+    env: { ...process.env, ASCENSION_VERIFY_PID: String(application.pid), ASCENSION_VERIFY_WIDTH: String(width), ASCENSION_VERIFY_HEIGHT: String(height),
+      ASCENSION_VERIFY_WINDOW_TYPE: 'using System; using System.Runtime.InteropServices; public static class AscensionVerifyWindow { [DllImport("user32.dll", SetLastError=true)] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int width, int height, uint flags); }' },
+  });
+  await until(() => evaluate(`window.outerWidth <= ${width} && window.innerWidth > 0`), 'native window resize');
 }
 async function launch() {
   const launchedAt = performance.now();
@@ -478,6 +493,8 @@ try {
     nativeDialog,ready,closeApplication,launch,checks,emptyProgress});
   await verifyStudy({evaluate,clientSend:(...args)=>client.send(...args),clickButton,typeAt,workspace,until,notice,root,exportFile,previewFile,
     nativeDialog,ready,closeApplication,launch,checks});
+  await verifyWorld({evaluate,clientSend:(...args)=>client.send(...args),clickButton,typeAt,workspace,until,notice,root,exportFile,previewFile,
+    nativeDialog,ready,closeApplication,launch,checks,key,resizeWindow});
   await closeApplication();
   await writeFile(path.join(root, 'native-result.json'), JSON.stringify({ passed: true, checks, dialogs, offline, startup,
     limitations: ['Offline denial is scoped to WebView2; Rust/OS-wide networking is not blocked.', 'Interruption tested before import confirmation and after acknowledged writes, not during a physical power failure.'] }, null, 2));
