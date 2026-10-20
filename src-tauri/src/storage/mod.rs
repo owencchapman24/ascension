@@ -1,4 +1,5 @@
 use crate::domain::*;
+use crate::progress;
 use rusqlite::{Connection, MAIN_DB, OpenFlags, TransactionBehavior, params};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -8,13 +9,22 @@ use std::time::Duration;
 
 const RECORDS_MIGRATION: &str = include_str!("../../migrations/001_records.sql");
 const STATE_MIGRATION: &str = include_str!("../../migrations/002_workspace_state.sql");
+const PROGRESS_MIGRATION: &str = include_str!("../../migrations/003_progress.sql");
 
 pub(crate) struct Repository {
     connection: Connection,
 }
 
 fn storage<T>(result: rusqlite::Result<T>) -> Result<T, CommandError> {
-    result.map_err(|_| CommandError::storage())
+    result.map_err(|error| match error.sqlite_error_code() {
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => {
+            CommandError::new(
+                "busy",
+                "The local database is busy. Try again after the other operation finishes.",
+            )
+        }
+        _ => CommandError::storage(),
+    })
 }
 
 fn ensure_empty(connection: &Connection) -> Result<(), CommandError> {
@@ -45,7 +55,7 @@ impl Repository {
         // Inspect compatibility before any pragma that changes the existing database.
         let version: u32 =
             storage(connection.pragma_query_value(None, "user_version", |row| row.get(0)))?;
-        if version > 2 {
+        if version > 3 {
             return Err(CommandError::new(
                 "unsupported_schema",
                 "This workspace was created by a newer app version. It has not been changed.",
@@ -68,25 +78,25 @@ impl Repository {
         if broken != 0 {
             return Err(CommandError::storage());
         }
-        if version < 2 {
+        if version < 3 {
             let transaction =
                 storage(connection.transaction_with_behavior(TransactionBehavior::Immediate))?;
             let locked_version: u32 =
                 storage(transaction.pragma_query_value(None, "user_version", |row| row.get(0)))?;
-            if locked_version > 2 {
+            if locked_version > 3 {
                 return Err(CommandError::new(
                     "unsupported_schema",
                     "This workspace was created by a newer app version. It has not been changed.",
                 ));
             }
-            if locked_version == 1 {
+            if (1..3).contains(&locked_version) {
                 // A second read-only connection snapshots committed data while this
                 // connection's IMMEDIATE lock excludes other database writers.
                 let source = storage(Connection::open_with_flags(
                     path,
                     OpenFlags::SQLITE_OPEN_READ_ONLY,
                 ))?;
-                migration_backup(&source, backup_dir)?;
+                migration_backup(&source, backup_dir, locked_version)?;
             }
             if locked_version < 2 {
                 if locked_version == 0 {
@@ -96,7 +106,16 @@ impl Repository {
                 storage(transaction.execute_batch(STATE_MIGRATION))?;
                 storage(transaction.execute("INSERT INTO workspace_state(singleton,generation,selected_objective_id) VALUES (1,?1,NULL)", [new_id()]))?;
                 storage(transaction.pragma_update(None, "user_version", 2))?;
-                // An invalid old record must roll back the schema upgrade as well.
+            }
+            if locked_version < 3 {
+                // The original criterion bytes are copied before dropping the old
+                // column. Any validation/DDL failure rolls the complete upgrade back.
+                storage(transaction.execute_batch(PROGRESS_MIGRATION))?;
+                progress::migrate_legacy(&transaction)?;
+                storage(
+                    transaction.execute_batch("ALTER TABLE objectives DROP COLUMN criterion;"),
+                )?;
+                storage(transaction.pragma_update(None, "user_version", 3))?;
                 read_workspace(&transaction)?;
             }
             storage(transaction.commit())?;
@@ -136,14 +155,36 @@ impl Repository {
         let mut workspace = before.clone();
         if change(&mut workspace)? {
             workspace.generation = new_id();
+            apply_workspace_changes(&transaction, &before, &workspace)?;
+            progress::sync_objectives(&transaction, &before.objectives, &workspace.objectives)?;
+            workspace.progress = progress::read(&transaction)?;
             let mut records = RecordSet::from(&workspace);
             records.normalize();
             validate_records(&records)?;
             workspace = records.into_workspace(workspace.generation);
-            apply_workspace_changes(&transaction, &before, &workspace)?;
         }
         storage(transaction.commit())?;
         Ok(workspace)
+    }
+
+    // Progress helpers own authority and replay checks, including replay before
+    // stale-generation checks. No frontend-visible success precedes this commit.
+    pub(crate) fn progress_change<T, F>(
+        &mut self,
+        change: F,
+    ) -> Result<(Workspace, T), CommandError>
+    where
+        F: FnOnce(&Connection) -> Result<T, CommandError>,
+    {
+        let transaction = storage(
+            self.connection
+                .transaction_with_behavior(TransactionBehavior::Immediate),
+        )?;
+        let result = change(&transaction)?;
+        let workspace = read_workspace(&transaction)?;
+        validate_records(&RecordSet::from(&workspace))?;
+        storage(transaction.commit())?;
+        Ok((workspace, result))
     }
 
     pub(crate) fn restore(
@@ -151,6 +192,7 @@ impl Repository {
         expected_generation: &str,
         records: RecordSet,
         backup_dir: &Path,
+        source_schema: u32,
     ) -> Result<RestoreResult, CommandError> {
         let transaction = storage(
             self.connection
@@ -160,6 +202,13 @@ impl Repository {
         if current.generation != expected_generation {
             return Err(CommandError::conflict());
         }
+        if source_schema == 1 && !current.progress.grants.is_empty() {
+            return Err(CommandError::new(
+                "unsafe_legacy_import",
+                "A legacy v1 export cannot replace earned reward history. Choose a complete Stage 3b export.",
+            ));
+        }
+        validate_records(&records)?;
         if RecordSet::from(&current) == records {
             storage(transaction.commit())?;
             return Ok(RestoreResult {
@@ -181,7 +230,11 @@ impl Repository {
     }
 }
 
-fn migration_backup(connection: &Connection, backup_dir: &Path) -> Result<(), CommandError> {
+fn migration_backup(
+    connection: &Connection,
+    backup_dir: &Path,
+    expected_version: u32,
+) -> Result<(), CommandError> {
     fs::create_dir_all(backup_dir).map_err(|_| CommandError::backup())?;
     let path = backup_dir.join(format!("before-migration-{}.sqlite3", new_id()));
     let file = OpenOptions::new()
@@ -205,7 +258,7 @@ fn migration_backup(connection: &Connection, backup_dir: &Path) -> Result<(), Co
     let version: u32 = backup
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|_| CommandError::backup())?;
-    if check != "ok" || version != 1 {
+    if check != "ok" || version != expected_version {
         return Err(CommandError::backup());
     }
     drop(backup);
@@ -255,7 +308,7 @@ fn read_workspace(connection: &Connection) -> Result<Workspace, CommandError> {
         storage(rows.collect::<rusqlite::Result<Vec<_>>>())?
     };
     let objectives = {
-        let mut statement = storage(connection.prepare("SELECT id,project_id,title,criterion,revision,created_at,updated_at FROM objectives ORDER BY id"))?;
+        let mut statement = storage(connection.prepare("SELECT o.id,o.project_id,o.title,c.description,o.revision,o.created_at,o.updated_at FROM objectives o LEFT JOIN progress_parents p ON p.id=o.id LEFT JOIN criterion_versions c ON c.criterion_lineage_id=p.primary_lineage_id AND c.criterion_version=(SELECT MAX(cv.criterion_version) FROM criterion_versions cv WHERE cv.criterion_lineage_id=p.primary_lineage_id) ORDER BY o.id"))?;
         let rows = storage(statement.query_map([], |row| {
             Ok(Objective {
                 id: row.get(0)?,
@@ -307,6 +360,7 @@ fn read_workspace(connection: &Connection) -> Result<Workspace, CommandError> {
         objectives,
         actions,
         notes,
+        progress: progress::read(connection)?,
     };
     valid_id(&workspace.generation).map_err(|_| CommandError::storage())?;
     validate_records(&RecordSet::from(&workspace)).map_err(|_| CommandError::storage())?;
@@ -373,14 +427,14 @@ fn apply_workspace_changes(
             Some(previous) if *previous == objective => {}
             Some(_) => {
                 storage(connection.execute(
-                    "UPDATE objectives SET project_id=?2,title=?3,criterion=?4,revision=?5,created_at=?6,updated_at=?7 WHERE id=?1",
-                    params![objective.id, objective.project_id, objective.title, objective.criterion, objective.revision, objective.created_at, objective.updated_at],
+                    "UPDATE objectives SET project_id=?2,title=?3,revision=?4,created_at=?5,updated_at=?6 WHERE id=?1",
+                    params![objective.id, objective.project_id, objective.title, objective.revision, objective.created_at, objective.updated_at],
                 ))?;
             }
             None => {
                 storage(connection.execute(
-                    "INSERT INTO objectives(id,project_id,title,criterion,revision,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-                    params![objective.id, objective.project_id, objective.title, objective.criterion, objective.revision, objective.created_at, objective.updated_at],
+                    "INSERT INTO objectives(id,project_id,title,revision,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6)",
+                    params![objective.id, objective.project_id, objective.title, objective.revision, objective.created_at, objective.updated_at],
                 ))?;
             }
         }
@@ -440,6 +494,7 @@ fn replace_workspace_for_restore(
     connection: &Connection,
     workspace: &Workspace,
 ) -> Result<(), CommandError> {
+    progress::clear(connection)?;
     storage(connection.execute_batch("UPDATE workspace_state SET selected_objective_id=NULL; DELETE FROM notes; DELETE FROM actions; DELETE FROM objectives; DELETE FROM projects;"))?;
     {
         let mut statement = storage(connection.prepare(
@@ -456,13 +511,12 @@ fn replace_workspace_for_restore(
         }
     }
     {
-        let mut statement = storage(connection.prepare("INSERT INTO objectives(id,project_id,title,criterion,revision,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7)"))?;
+        let mut statement = storage(connection.prepare("INSERT INTO objectives(id,project_id,title,revision,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6)"))?;
         for objective in &workspace.objectives {
             storage(statement.execute(params![
                 objective.id,
                 objective.project_id,
                 objective.title,
-                objective.criterion,
                 objective.revision,
                 objective.created_at,
                 objective.updated_at
@@ -496,6 +550,7 @@ fn replace_workspace_for_restore(
             ]))?;
         }
     }
+    progress::restore(connection, &workspace.progress)?;
     storage(connection.execute(
         "UPDATE workspace_state SET generation=?1,selected_objective_id=?2 WHERE singleton=1",
         params![workspace.generation, workspace.selected_objective_id],

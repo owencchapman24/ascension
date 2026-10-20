@@ -1,5 +1,6 @@
 mod commands;
 pub mod domain;
+pub mod progress;
 pub mod service;
 mod storage;
 
@@ -22,6 +23,13 @@ pub fn run() {
             commands::export_workspace,
             commands::preview_import,
             commands::restore_import,
+            commands::save_criterion,
+            commands::lock_criterion,
+            commands::record_evidence,
+            commands::review_progress,
+            commands::accept_progress,
+            commands::correct_acceptance,
+            commands::reject_review,
         ])
         .run(tauri::generate_context!());
     if result.is_err() {

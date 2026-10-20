@@ -90,6 +90,37 @@ fn save_input(workspace: &Workspace, note: Option<String>) -> SaveWorkInput {
     }
 }
 
+fn assert_legacy_records_preserved(actual: &RecordSet, legacy: &RecordSet) {
+    assert_eq!(actual.schema_version, 2);
+    assert_eq!(actual.format, legacy.format);
+    assert_eq!(actual.projects, legacy.projects);
+    assert_eq!(actual.objectives, legacy.objectives);
+    assert_eq!(actual.actions, legacy.actions);
+    assert_eq!(actual.notes, legacy.notes);
+    assert_eq!(actual.selected_objective_id, legacy.selected_objective_id);
+    let progress = actual.progress.as_ref().unwrap();
+    assert_eq!(progress.parents.len(), legacy.objectives.len());
+    assert_eq!(progress.slots.len(), legacy.objectives.len());
+    assert_eq!(progress.criteria.len(), legacy.objectives.len());
+    assert!(progress.acceptances.is_empty());
+    assert!(progress.grants.is_empty());
+    assert!(progress.ledger.is_empty());
+    assert_eq!(progress.wallet_bc, 0);
+    for objective in &legacy.objectives {
+        let criterion = progress
+            .criteria
+            .iter()
+            .find(|row| row.parent_id == objective.id)
+            .unwrap();
+        assert_eq!(criterion.description, objective.criterion);
+        assert_eq!(
+            criterion.state,
+            ascension_lib::progress::CriterionState::Draft
+        );
+        assert_eq!(criterion.criterion_version, 1);
+    }
+}
+
 #[test]
 fn initialization_and_restart_preserve_authoritative_records_and_selection() {
     let mut fixture = Fixture::new();
@@ -113,7 +144,7 @@ fn initialization_and_restart_preserve_authoritative_records_and_selection() {
         connection
             .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
             .unwrap(),
-        2
+        3
     );
 }
 
@@ -295,7 +326,8 @@ fn exact_fixture_restore_roundtrip_replay_and_reordered_arrays_preserve_identity
     assert!(restored.backup_created && !restored.unchanged);
     assert_ne!(restored.workspace.generation, original.generation);
     let expected: RecordSet = serde_json::from_slice(SAMPLE).unwrap();
-    assert_eq!(RecordSet::from(&restored.workspace), expected);
+    assert_legacy_records_preserved(&RecordSet::from(&restored.workspace), &expected);
+    let expected = RecordSet::from(&restored.workspace);
     let backups = fixture.backup_paths();
     assert_eq!(backups.len(), 1);
     assert_eq!(fs::read(&backups[0]).unwrap(), original_bytes);
@@ -520,9 +552,9 @@ fn preview_retains_exact_validated_bytes_and_cross_connection_restore_is_stale()
             expected_generation: preview.generation,
         })
         .unwrap();
-    assert_eq!(
-        RecordSet::from(&restored.workspace),
-        serde_json::from_slice::<RecordSet>(SAMPLE).unwrap()
+    assert_legacy_records_preserved(
+        &RecordSet::from(&restored.workspace),
+        &serde_json::from_slice::<RecordSet>(SAMPLE).unwrap(),
     );
     let stale = fixture
         .service
@@ -690,6 +722,13 @@ fn every_saved_workspace_remains_within_the_reimportable_export_size_limit() {
         records.objectives.push(objective);
         records.notes.push(note);
     }
+    // First obtain the complete current format including deterministic draft
+    // criterion metadata, then size the final export rather than its legacy input.
+    records = RecordSet::from(
+        &fixture
+            .restore(&serde_json::to_vec(&records).unwrap())
+            .workspace,
+    );
     let target_bytes = MAX_IMPORT_BYTES - 16;
     let mut remaining = target_bytes - serde_json::to_vec_pretty(&records).unwrap().len();
     for note in &mut records.notes {
@@ -788,9 +827,9 @@ fn populated_v1_migration_preserves_records_and_creates_readable_sqlite_backup()
     let backups = directory.path().join("backups");
     let expected = seed_v1(&database);
     let service = WorkspaceService::open(&database, &backups).unwrap();
-    assert_eq!(
-        RecordSet::from(&service.load_workspace().unwrap()),
-        expected
+    assert_legacy_records_preserved(
+        &RecordSet::from(&service.load_workspace().unwrap()),
+        &expected,
     );
     let backup_paths: Vec<_> = fs::read_dir(&backups)
         .unwrap()
@@ -1250,7 +1289,7 @@ fn valid_sqlite_with_corrupted_current_records_is_rejected_without_replacing_rec
             connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
                 .unwrap(),
-            2
+            3
         );
         assert!(!fixture.backups.exists());
     }
@@ -1263,9 +1302,9 @@ fn migration_backup_recovers_as_a_complete_workspace_in_a_fresh_profile() {
     let backups = directory.path().join("backups");
     let expected = seed_v1(&database);
     let migrated = WorkspaceService::open(&database, &backups).unwrap();
-    assert_eq!(
-        RecordSet::from(&migrated.load_workspace().unwrap()),
-        expected
+    assert_legacy_records_preserved(
+        &RecordSet::from(&migrated.load_workspace().unwrap()),
+        &expected,
     );
     let backup = fs::read_dir(&backups)
         .unwrap()
@@ -1280,9 +1319,9 @@ fn migration_backup_recovers_as_a_complete_workspace_in_a_fresh_profile() {
         &directory.path().join("recovery-backups"),
     )
     .unwrap();
-    assert_eq!(
-        RecordSet::from(&recovered.load_workspace().unwrap()),
-        expected
+    assert_legacy_records_preserved(
+        &RecordSet::from(&recovered.load_workspace().unwrap()),
+        &expected,
     );
     assert_eq!(
         recovered.export_bytes().unwrap(),

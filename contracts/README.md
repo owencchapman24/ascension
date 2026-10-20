@@ -1,4 +1,30 @@
-# Stage 3a record and command contract
+# Ascension record and command contract
+
+## Stage 3b extension
+
+The current database version is 3 and the complete interchange version is 2. The Stage 3a section below remains the legacy v1 input contract. Every current `Workspace` also has a required `progress` object. Its exact strict types and validation are in `src-tauri/src/progress.rs`; the renderer types are in `src/platform/client.ts`. The architecture and compatibility policy are recorded in ADR-0004.
+
+Interchange v2 retains the v1 top-level work collections and selection, sets `schema_version: 2`, and requires `progress`. Its collections are `parents`, `slots`, `criteria`, `evidence`, `validators`, `snapshots`, `acceptances`, `corrections`, `grants`, `ledger`, `audit`, and `commands`, plus `registry_revision` and a checked `wallet_bc` projection. All are required. No local workspace generation is added at envelope level; historical acceptance command payloads retain their original expected generation for exact idempotent replay. Objective criterion text is a checked projection of the latest primary-lineage criterion, never a second mutable stored definition.
+
+Each correction carries its monotonic `registry_revision`; subsequent acceptance requires a review at or after that correction. Accepted snapshots and acceptance records must correspond in both directions. Each ledger entry has a contiguous issuance `sequence`; committed commands retain `ledger_sequence` so their original balances can be validated against the exact historical prefix. These are causal and accounting identities, independent of wall-clock ordering.
+
+| New command | Result after durable commit |
+| --- | --- |
+| `save_criterion` | Complete `Workspace`; edit draft or create a same-lineage prospective version |
+| `lock_criterion` | Complete `Workspace`; freeze version and positive integer slot allocation |
+| `record_evidence` | Complete `Workspace`; append honestly labeled evidence or explicit supersession |
+| `review_progress` | `{ workspace, snapshot }`; complete registered applicable evidence and missing/conflict status |
+| `accept_progress` | `{ workspace, result }`; result contains `acceptance_id`, `grant_id`, `issued_bc`, original `balance_bc`, and `retained_reward` |
+| `correct_acceptance` | Complete `Workspace`; append incorrect-acceptance or historical-reopened correction |
+| `reject_review` | Complete `Workspace`; reject pending review with reason, no issuance |
+
+All use one `input` argument and reject unknown fields. Definitions include exact UUIDs, criterion lineage/version, expected generation, factual summary and assistance where applicable. Acceptance additionally requires command schema version 1, UUID command ID, expected parent revision, snapshot ID/digest, and evidence IDs. It never accepts amount, actor, trust privilege, or policy override. The backend canonicalizes reference order; exact committed replay precedes stale checks. Retry the same logical acceptance with the same command ID and payload. An idempotent result's original balance can be older than the accompanying current workspace; the UI displays the latter's derived wallet.
+
+New controlled error codes include `busy`, `stale_review`, `evidence_ineligible`, `idempotency_conflict`, `unavailable_authority`, and `unsafe_legacy_import`. Required unavailable validators stay missing, never fabricated. No production trusted-validator registration command exists.
+
+Import preview adds original incoming `schema_version`, a clear `warning`, and both current/incoming counts for criteria, evidence, snapshots, acceptances, corrections, grants, ledger, committed commands, and wallet BC. Legacy v1 cannot replace local earned history. Modern whole-state replacement is explicit and backed up. All work and progress collections count toward the shared 10,000-record and 10-MiB complete-export limits. Referenced snapshots contain frozen evidence copies for historical interpretation; their bytes count toward the export limit.
+
+## Historical Stage 3a contract
 
 This is the accepted frontend/backend implementation contract. All field names and command inputs use `snake_case`. Rust validates every input and owns durable state. The record model and replacement policy are explained in [ADR-0002](../docs/decisions/ADR-0002-stage-3a-records-and-restore.md).
 

@@ -8,6 +8,8 @@ use std::{
 use serde::Serialize;
 use tauri::State;
 
+use crate::progress::*;
+use crate::service::{AcceptanceResult, ReviewResult};
 use crate::{domain::*, service::WorkspaceService};
 
 #[derive(Clone)]
@@ -79,6 +81,77 @@ async fn service_task<T: Send + 'static>(
 #[tauri::command]
 pub(crate) async fn load_workspace(state: State<'_, AppState>) -> Result<Workspace, CommandError> {
     service_task(state.inner().clone(), |service| service.load_workspace()).await
+}
+
+#[tauri::command]
+pub(crate) async fn save_criterion(
+    state: State<'_, AppState>,
+    input: SaveCriterionInput,
+) -> Result<Workspace, CommandError> {
+    service_task(state.inner().clone(), move |service| {
+        service.save_criterion(input)
+    })
+    .await
+}
+#[tauri::command]
+pub(crate) async fn lock_criterion(
+    state: State<'_, AppState>,
+    input: LockCriterionInput,
+) -> Result<Workspace, CommandError> {
+    service_task(state.inner().clone(), move |service| {
+        service.lock_criterion(input)
+    })
+    .await
+}
+#[tauri::command]
+pub(crate) async fn record_evidence(
+    state: State<'_, AppState>,
+    input: RecordEvidenceInput,
+) -> Result<Workspace, CommandError> {
+    service_task(state.inner().clone(), move |service| {
+        service.record_evidence(input)
+    })
+    .await
+}
+#[tauri::command]
+pub(crate) async fn review_progress(
+    state: State<'_, AppState>,
+    input: ReviewProgressInput,
+) -> Result<ReviewResult, CommandError> {
+    service_task(state.inner().clone(), move |service| {
+        service.review_progress(input)
+    })
+    .await
+}
+#[tauri::command]
+pub(crate) async fn accept_progress(
+    state: State<'_, AppState>,
+    input: AcceptProgressInput,
+) -> Result<AcceptanceResult, CommandError> {
+    service_task(state.inner().clone(), move |service| {
+        service.accept_progress(input)
+    })
+    .await
+}
+#[tauri::command]
+pub(crate) async fn correct_acceptance(
+    state: State<'_, AppState>,
+    input: CorrectAcceptanceInput,
+) -> Result<Workspace, CommandError> {
+    service_task(state.inner().clone(), move |service| {
+        service.correct_acceptance(input)
+    })
+    .await
+}
+#[tauri::command]
+pub(crate) async fn reject_review(
+    state: State<'_, AppState>,
+    input: RejectReviewInput,
+) -> Result<Workspace, CommandError> {
+    service_task(state.inner().clone(), move |service| {
+        service.reject_review(input)
+    })
+    .await
 }
 
 #[tauri::command]
