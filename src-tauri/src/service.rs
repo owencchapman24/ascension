@@ -1,6 +1,7 @@
 use crate::domain::*;
 use crate::progress::{self, *};
 use crate::storage::Repository;
+use crate::study::{self, *};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -29,6 +30,79 @@ pub struct WorkspaceService {
 }
 
 impl WorkspaceService {
+    pub fn set_construction_enabled(
+        &mut self,
+        input: SetConstructionEnabledInput,
+    ) -> Result<Workspace, CommandError> {
+        self.repository
+            .progress_change(|c| study::set_construction_enabled(c, input))
+            .map(|(w, ())| w)
+    }
+    pub fn create_schedule_epoch(
+        &mut self,
+        input: CreateScheduleEpochInput,
+    ) -> Result<Workspace, CommandError> {
+        self.repository
+            .progress_change(|c| study::create_epoch(c, input))
+            .map(|(w, ())| w)
+    }
+    pub fn configure_study(
+        &mut self,
+        input: ConfigureStudyInput,
+    ) -> Result<Workspace, CommandError> {
+        self.repository
+            .progress_change(|c| study::configure(c, input))
+            .map(|(w, ())| w)
+    }
+    pub fn transition_study(
+        &mut self,
+        input: TransitionStudyInput,
+    ) -> Result<Workspace, CommandError> {
+        self.repository
+            .progress_change(|c| study::transition(c, input))
+            .map(|(w, ())| w)
+    }
+    pub fn plan_opportunity(
+        &mut self,
+        input: PlanOpportunityInput,
+    ) -> Result<Workspace, CommandError> {
+        self.repository
+            .progress_change(|c| study::plan(c, input))
+            .map(|(w, ())| w)
+    }
+    pub fn record_opportunity_outcome(
+        &mut self,
+        input: RecordOpportunityOutcomeInput,
+    ) -> Result<Workspace, CommandError> {
+        self.repository
+            .progress_change(|c| study::outcome(c, input))
+            .map(|(w, ())| w)
+    }
+    pub fn record_study_exposure(
+        &mut self,
+        input: RecordStudyExposureInput,
+    ) -> Result<Workspace, CommandError> {
+        self.repository
+            .progress_change(|c| study::exposure(c, input))
+            .map(|(w, ())| w)
+    }
+    pub fn record_study_burden(
+        &mut self,
+        input: RecordStudyBurdenInput,
+    ) -> Result<Workspace, CommandError> {
+        self.repository
+            .progress_change(|c| study::burden(c, input))
+            .map(|(w, ())| w)
+    }
+    pub fn record_study_reflection(
+        &mut self,
+        input: RecordStudyReflectionInput,
+    ) -> Result<Workspace, CommandError> {
+        self.repository
+            .progress_change(|c| study::reflection(c, input))
+            .map(|(w, ())| w)
+    }
+
     pub fn save_criterion(&mut self, input: SaveCriterionInput) -> Result<Workspace, CommandError> {
         self.repository
             .progress_change(|connection| progress::save_criterion(connection, input))
@@ -307,6 +381,12 @@ impl WorkspaceService {
         self.discard_preview();
         let (records, source_schema) = parse_import(bytes)?;
         let workspace = self.repository.load()?;
+        if source_schema < 3 && workspace.study.record_count() > 0 {
+            return Err(CommandError::new(
+                "unsafe_legacy_import",
+                "An older export cannot replace opportunity or study history. Choose a complete Stage 3c export.",
+            ));
+        }
         if source_schema == 1 && !workspace.progress.grants.is_empty() {
             return Err(CommandError::new(
                 "unsafe_legacy_import",
@@ -331,8 +411,10 @@ impl WorkspaceService {
             schema_version: source_schema,
             warning: if source_schema == 1 {
                 "Legacy v1: criteria become unaccepted drafts; no credits are created. Legacy files cannot replace earned history.".into()
+            } else if source_schema == 2 {
+                "Legacy v2: complete reward history is preserved; opportunity and study fields initialize empty. Older files cannot replace any existing study history.".into()
             } else {
-                "Complete replacement includes criteria, evidence, acceptances, corrections, and reward history. History absent from this file will be removed. A complete recovery backup is saved first.".into()
+                "Complete replacement includes Work, reward history, schedule epochs, frozen study protocols, assignments, outcomes and corrections, exposures, burden, reflections, and construction preferences. History absent from this file will be removed. A complete recovery backup is saved first.".into()
             },
         })
     }

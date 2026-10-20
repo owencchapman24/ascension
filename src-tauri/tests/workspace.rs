@@ -91,7 +91,7 @@ fn save_input(workspace: &Workspace, note: Option<String>) -> SaveWorkInput {
 }
 
 fn assert_legacy_records_preserved(actual: &RecordSet, legacy: &RecordSet) {
-    assert_eq!(actual.schema_version, 2);
+    assert_eq!(actual.schema_version, 3);
     assert_eq!(actual.format, legacy.format);
     assert_eq!(actual.projects, legacy.projects);
     assert_eq!(actual.objectives, legacy.objectives);
@@ -144,7 +144,7 @@ fn initialization_and_restart_preserve_authoritative_records_and_selection() {
         connection
             .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
             .unwrap(),
-        3
+        4
     );
 }
 
@@ -1289,7 +1289,7 @@ fn valid_sqlite_with_corrupted_current_records_is_rejected_without_replacing_rec
             connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
                 .unwrap(),
-            3
+            4
         );
         assert!(!fixture.backups.exists());
     }
@@ -1403,7 +1403,7 @@ fn committed_wal_survives_process_exit_without_connection_cleanup() {
             .len()
             > 0
     );
-    let expected: Workspace = serde_json::from_slice(
+    let expected: Value = serde_json::from_slice(
         &fs::read(directory.path().join("expected-workspace.json")).unwrap(),
     )
     .unwrap();
@@ -1412,7 +1412,10 @@ fn committed_wal_survives_process_exit_without_connection_cleanup() {
         &directory.path().join("backups"),
     )
     .unwrap();
-    assert_eq!(reopened.load_workspace().unwrap(), expected);
+    assert_eq!(
+        serde_json::to_value(reopened.load_workspace().unwrap()).unwrap(),
+        expected
+    );
     assert_eq!(
         reopened.export_bytes().unwrap(),
         fs::read(directory.path().join("expected-export.json")).unwrap()
