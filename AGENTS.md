@@ -10,9 +10,9 @@ This is a **public** repository for a Windows-first, local-first productivity ap
 - Do not access APIs, cloud accounts, external project directories, connectors, or files other than normal public dependency registries without explicit approval.
 - Do not add Actions workflows until tests exist and the workflow is deliberately reviewed for permissions, secrets, trigger scope, and artifact retention. Public runners still have concurrency, storage and security considerations.
 
-## Current goal — Stage 3c (owner authorized)
+## Current goal — Stage 4 (owner authorized)
 
-The owner's Stage 3c assignment authorizes durable work opportunities, honest outcome/missingness tracking, E00/E01 infrastructure, one fixed presentation-only 64-unit H1 scene, and complete portability. Read `docs/specs/STAGE_3B.md` and `docs/specs/STAGE_3C.md` in addition to the Stage 3a baseline documents. Preserve Stage 3a/3b behavior, data, evidence authority, and `bc-v1` issuance invariants. Work on `feat/stage-3c-opportunities-h1`; local verified commits are authorized, but pushing, merging, publishing, and releasing are not. Do not activate a real E01 study on behalf of the owner; synthetic isolated tests may exercise the engine. Stage 4 remains excluded.
+The owner's Stage 4 assignment authorizes one River Reach strategy chapter, construction reservations/spending, reusable funded capacity, spatial placement, free reconfiguration/undo, three alternative routes, an immutable Chronicle ending, sandbox alternatives, and complete portability. Read `docs/specs/STAGE_3B.md`, `docs/specs/STAGE_3C.md`, and `docs/specs/STAGE_4.md` in addition to the Stage 3a baseline documents. Preserve Stage 3a/3b/3c behavior, data, evidence authority, `bc-v1` issuance invariants, and the fixed H1 instrument. Work on `feat/stage-4-river-reach`; local verified commits are authorized, but pushing, merging, publishing, deploying, and releasing are not. Do not activate real E00/E01 studies on behalf of the owner; synthetic isolated tests may exercise the engine. Stage 5 remains excluded.
 
 The following Stage 3a workflow remains a regression requirement:
 
@@ -23,7 +23,7 @@ Build a minimal **packaged Windows app** in which a person can:
 4. Export and reimport an open, versioned record set while preserving stable IDs/versions.
 5. Reject malformed, corrupted, or unsupported-version imports without destroying valid local state.
 
-Do **not** add AI, API calls, strategic gameplay, credit spending, broad project-file scanning, cloud sync, accounts, telemetry, payments, autonomous actions, notifications, surveillance, or Stage 4. Stage 3c permits only the explicitly scoped opportunity/study infrastructure and fixed H1 presentation. Evidence authority is bounded to registered sources; no external test runner or fabricated trusted validator. The app must remain useful with fictional progression hidden.
+Do **not** add AI, API calls, broad project-file scanning, cloud sync, accounts, telemetry, payments, autonomous actions, notifications, surveillance, or Stage 5. Strategic gameplay and spending are limited to the six-site, 24-BC River Reach chapter under `river-reach-v1`. Gameplay cannot issue BC or change accomplishment authority. Evidence authority is bounded to registered sources; no external test runner or fabricated trusted validator. Withhold H2 while E00/E01 is active. The app must remain useful with fictional progression hidden.
 
 ## Technical decisions
 
@@ -35,4 +35,4 @@ Do **not** add AI, API calls, strategic gameplay, credit spending, broad project
 
 ## Working method
 
-Inspect `git status` and the environment first. Report missing Node/npm, Rust MSVC, Windows C++ Build Tools or WebView2 before requesting changes. Use pinned compatible dependencies and commit lockfiles. Make small, tested, reviewable commits; record test commands and real results. If a framework/toolchain change is necessary, propose the smallest alternative and request approval before switching. Maintain an architectural decision record for any departure from these constraints. **Stop at Stage 3c and request approval before expanding scope.**
+Inspect `git status` and the environment first. Report missing Node/npm, Rust MSVC, Windows C++ Build Tools or WebView2 before requesting changes. Use pinned compatible dependencies and commit lockfiles. Make small, tested, reviewable commits; record test commands and real results. If a framework/toolchain change is necessary, propose the smallest alternative and request approval before switching. Maintain an architectural decision record for any departure from these constraints. **Stop at Stage 4 and request approval before expanding scope.**
