@@ -592,6 +592,7 @@ fn older_exports_cannot_erase_study_history() {
     let mut old: Value = serde_json::from_slice(&bytes).unwrap();
     old["schema_version"] = json!(2);
     old.as_object_mut().unwrap().remove("study");
+    old.as_object_mut().unwrap().remove("world");
     let old = serde_json::to_vec(&old).unwrap();
     f.plan(300, None);
     let before = f.ws();
@@ -610,6 +611,7 @@ fn legacy_v2_initializes_empty_study_state_in_compatible_workspace() {
     let mut value: Value = serde_json::from_slice(&f.service.export_bytes().unwrap()).unwrap();
     value["schema_version"] = json!(2);
     value.as_object_mut().unwrap().remove("study");
+    value.as_object_mut().unwrap().remove("world");
     let d = tempfile::tempdir().unwrap();
     let mut service =
         WorkspaceService::open(&d.path().join("db"), &d.path().join("backups")).unwrap();
@@ -718,6 +720,9 @@ fn populated_v3_migration_is_additive_and_creates_coherent_backup() {
     let c = Connection::open(&f.db).unwrap();
     c.pragma_update(None, "foreign_keys", "OFF").unwrap();
     for table in [
+        "world_commands",
+        "world_spending",
+        "world_chapter",
         "presentation_preferences",
         "study_reflections",
         "study_burdens",

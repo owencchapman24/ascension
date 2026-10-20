@@ -4,6 +4,7 @@ pub mod progress;
 pub mod service;
 mod storage;
 pub mod study;
+pub mod world;
 
 use tauri::Manager;
 
@@ -15,6 +16,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::load_workspace,
+            commands::load_world,
+            commands::preview_world,
+            commands::world_command,
             commands::set_construction_enabled,
             commands::create_schedule_epoch,
             commands::configure_study,

@@ -1,5 +1,5 @@
 use crate::domain::*;
-use crate::{progress, study};
+use crate::{progress, study, world};
 use rusqlite::{Connection, MAIN_DB, OpenFlags, TransactionBehavior, params};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -11,6 +11,7 @@ const RECORDS_MIGRATION: &str = include_str!("../../migrations/001_records.sql")
 const STATE_MIGRATION: &str = include_str!("../../migrations/002_workspace_state.sql");
 const PROGRESS_MIGRATION: &str = include_str!("../../migrations/003_progress.sql");
 const STUDY_MIGRATION: &str = include_str!("../../migrations/004_study.sql");
+const WORLD_MIGRATION: &str = include_str!("../../migrations/005_world.sql");
 
 pub(crate) struct Repository {
     connection: Connection,
@@ -56,7 +57,7 @@ impl Repository {
         // Inspect compatibility before any pragma that changes the existing database.
         let version: u32 =
             storage(connection.pragma_query_value(None, "user_version", |row| row.get(0)))?;
-        if version > 4 {
+        if version > 5 {
             return Err(CommandError::new(
                 "unsupported_schema",
                 "This workspace was created by a newer app version. It has not been changed.",
@@ -79,18 +80,18 @@ impl Repository {
         if broken != 0 {
             return Err(CommandError::storage());
         }
-        if version < 4 {
+        if version < 5 {
             let transaction =
                 storage(connection.transaction_with_behavior(TransactionBehavior::Immediate))?;
             let locked_version: u32 =
                 storage(transaction.pragma_query_value(None, "user_version", |row| row.get(0)))?;
-            if locked_version > 4 {
+            if locked_version > 5 {
                 return Err(CommandError::new(
                     "unsupported_schema",
                     "This workspace was created by a newer app version. It has not been changed.",
                 ));
             }
-            if (1..4).contains(&locked_version) {
+            if (1..5).contains(&locked_version) {
                 // A second read-only connection snapshots committed data while this
                 // connection's IMMEDIATE lock excludes other database writers.
                 let source = storage(Connection::open_with_flags(
@@ -122,6 +123,10 @@ impl Repository {
                 storage(transaction.execute_batch(STUDY_MIGRATION))?;
                 storage(transaction.pragma_update(None, "user_version", 4))?;
             }
+            if locked_version < 5 {
+                storage(transaction.execute_batch(WORLD_MIGRATION))?;
+                storage(transaction.pragma_update(None, "user_version", 5))?;
+            }
             read_workspace(&transaction)?;
             storage(transaction.commit())?;
         }
@@ -138,6 +143,23 @@ impl Repository {
         let workspace = read_workspace(&transaction)?;
         storage(transaction.commit())?;
         Ok(workspace)
+    }
+
+    pub(crate) fn world_view(&self) -> Result<world::WorldView, CommandError> {
+        let transaction = storage(self.connection.unchecked_transaction())?;
+        let view = world::view(&transaction)?;
+        storage(transaction.commit())?;
+        Ok(view)
+    }
+
+    pub(crate) fn world_preview(
+        &self,
+        input: world::WorldPreviewInput,
+    ) -> Result<world::WorldPreview, CommandError> {
+        let transaction = storage(self.connection.unchecked_transaction())?;
+        let preview = world::preview(&transaction, input)?;
+        storage(transaction.commit())?;
+        Ok(preview)
     }
 
     pub(crate) fn change<F>(
@@ -206,6 +228,12 @@ impl Repository {
         let current = read_workspace(&transaction)?;
         if current.generation != expected_generation {
             return Err(CommandError::conflict());
+        }
+        if source_schema < 4 && current.world.has_history() {
+            return Err(CommandError::new(
+                "unsafe_legacy_import",
+                "An older export cannot replace River Reach history or its accounting. Choose a complete Stage 4 export.",
+            ));
         }
         if source_schema < 3 && current.study.record_count() > 0 {
             return Err(CommandError::new(
@@ -373,6 +401,7 @@ fn read_workspace(connection: &Connection) -> Result<Workspace, CommandError> {
         notes,
         progress: progress::read(connection)?,
         study: study::read(connection)?,
+        world: world::read(connection)?,
     };
     valid_id(&workspace.generation).map_err(|_| CommandError::storage())?;
     validate_records(&RecordSet::from(&workspace)).map_err(|_| CommandError::storage())?;
@@ -506,6 +535,7 @@ fn replace_workspace_for_restore(
     connection: &Connection,
     workspace: &Workspace,
 ) -> Result<(), CommandError> {
+    world::clear(connection)?;
     study::clear(connection)?;
     progress::clear(connection)?;
     storage(connection.execute_batch("UPDATE workspace_state SET selected_objective_id=NULL; DELETE FROM notes; DELETE FROM actions; DELETE FROM objectives; DELETE FROM projects;"))?;
@@ -565,6 +595,7 @@ fn replace_workspace_for_restore(
     }
     progress::restore(connection, &workspace.progress)?;
     study::restore(connection, &workspace.study)?;
+    world::restore(connection, &workspace.world)?;
     storage(connection.execute(
         "UPDATE workspace_state SET generation=?1,selected_objective_id=?2 WHERE singleton=1",
         params![workspace.generation, workspace.selected_objective_id],

@@ -323,7 +323,7 @@ fn populated_v2_upgrade_preserves_legacy_records_wal_selection_and_recoverable_b
         observer
             .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
             .unwrap(),
-        4
+        5
     );
     let duplicated_criterion: i64 = observer
         .query_row(
@@ -510,7 +510,7 @@ fn modern_corrected_history_roundtrips_exactly_and_retries_remain_idempotent_aft
     let (fixture, original, command, original_result) = corrected_and_reaccepted_fixture();
     let bytes = fixture.service.export_bytes().unwrap();
     let records: RecordSet = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(records.schema_version, 3);
+    assert_eq!(records.schema_version, 4);
     assert_eq!(records.progress.as_ref(), Some(&original.progress));
     assert!(
         !String::from_utf8(bytes.clone())
