@@ -119,7 +119,7 @@ model!(OutcomeEvent {
     latency_seconds:Option<u32>,censored_at_seconds:Option<u32>,late_start:bool,
     priority_advanced:Option<bool>,quality_note:Option<String>,acceptance_id:Option<String>
 });
-model!(ExposureEvent {id:String,opportunity_id:Option<String>,kind:ExposureKind,note:Option<String>,created_at:String,issued_bc:u32,ledger_sequence:u32,protocol_event_id:Option<String>,h1_saturated:bool});
+model!(ExposureEvent {id:String,opportunity_id:Option<String>,kind:ExposureKind,note:Option<String>,created_at:String,issued_bc:u32,ledger_sequence:u32,preference_sequence:u32,protocol_event_id:Option<String>,h1_saturated:bool});
 model!(BurdenEvent {id:String,opportunity_id:Option<String>,category:BurdenCategory,minutes:u32,note:Option<String>,created_at:String,method:String});
 model!(Reflection {id:String,manifest_id:Option<String>,note:String,created_at:String});
 model!(PresentationPreference {
@@ -929,6 +929,7 @@ pub(crate) fn exposure(c: &Connection, i: RecordStudyExposureInput) -> Result<()
         created_at: at,
         issued_bc: issued,
         ledger_sequence: progress.ledger.len() as u32,
+        preference_sequence: s.preferences.len() as u32,
         protocol_event_id: s
             .manifests
             .iter()
@@ -1002,6 +1003,20 @@ pub(crate) fn serialize_view<S: Serializer>(
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     let at = study_now();
+    // These indexes live only for this validated workspace projection. They do
+    // not cache authority across commands or replace the original event history.
+    let opportunities: HashMap<_, _> = s.opportunities.iter().map(|o| (o.id.as_str(), o)).collect();
+    let mut latest_outcomes: HashMap<&str, &OutcomeEvent> =
+        HashMap::with_capacity(s.opportunities.len());
+    for outcome in &s.outcomes {
+        let latest = latest_outcomes
+            .entry(outcome.opportunity_id.as_str())
+            .or_insert(outcome);
+        // Match Iterator::max_by_key, including its last-on-equal behavior.
+        if outcome.sequence >= latest.sequence {
+            *latest = outcome;
+        }
+    }
     let mut value = serde_json::to_value(s).map_err(serde::ser::Error::custom)?;
     for m in value["manifests"].as_array_mut().expect("manifest array") {
         let id = m["id"].as_str().expect("manifest id").to_owned();
@@ -1010,10 +1025,7 @@ pub(crate) fn serialize_view<S: Serializer>(
         m["status"] = serde_json::to_value(s.status(&id)).map_err(serde::ser::Error::custom)?;
     }
     for a in value["assignments"].as_array_mut().expect("assignments") {
-        let o = s
-            .opportunities
-            .iter()
-            .find(|o| o.id == a["opportunity_id"].as_str().unwrap_or_default());
+        let o = opportunities.get(a["opportunity_id"].as_str().unwrap_or_default());
         if o.is_some_and(|o| {
             stamp(&o.cue_at)
                 .is_ok_and(|cue| stamp(&at).expect("now") < cue - chrono::Duration::seconds(60))
@@ -1028,12 +1040,8 @@ pub(crate) fn serialize_view<S: Serializer>(
         .expect("opportunities")
     {
         let id = o["id"].as_str().expect("opportunity id");
-        let raw = s
-            .opportunities
-            .iter()
-            .find(|v| v.id == id)
-            .expect("opportunity");
-        let state = s.latest_outcome(id).map_or_else(
+        let raw = opportunities.get(id).expect("opportunity");
+        let state = latest_outcomes.get(id).map_or_else(
             || {
                 if stamp(&at).expect("now")
                     >= stamp(&raw.cue_at).expect("cue")
@@ -1115,6 +1123,14 @@ pub(crate) fn validate(s: &StudyState, r: &RecordSet) -> Result<(), CommandError
     let epochs: HashMap<_, _> = s.epochs.iter().map(|e| (e.id.as_str(), e)).collect();
     let manifests: HashMap<_, _> = s.manifests.iter().map(|m| (m.id.as_str(), m)).collect();
     let opportunities: HashMap<_, _> = s.opportunities.iter().map(|o| (o.id.as_str(), o)).collect();
+    let mut outcome_groups: HashMap<&str, Vec<&OutcomeEvent>> =
+        HashMap::with_capacity(s.opportunities.len());
+    for outcome in &s.outcomes {
+        outcome_groups
+            .entry(outcome.opportunity_id.as_str())
+            .or_default()
+            .push(outcome);
+    }
     for e in &s.epochs {
         text(&e.label, 120, "Epoch label")?;
         text(&e.timezone, 100, "Timezone")?;
@@ -1366,8 +1382,13 @@ pub(crate) fn validate(s: &StudyState, r: &RecordSet) -> Result<(), CommandError
             .collect();
         assignments.sort_by_key(|a| a.position);
         for pair in assignments.windows(2) {
-            if pair[0].assigned_at > pair[1].assigned_at {
-                return Err(invalid("Assignment sequence is not chronological."));
+            if pair[0].assigned_at > pair[1].assigned_at
+                || pair[0].ledger_sequence > pair[1].ledger_sequence
+                || pair[0].issued_bc_at_assignment > pair[1].issued_bc_at_assignment
+            {
+                return Err(invalid(
+                    "Assignment sequence or issuance history moves backwards.",
+                ));
             }
         }
         for (index, a) in assignments.iter().enumerate() {
@@ -1424,11 +1445,7 @@ pub(crate) fn validate(s: &StudyState, r: &RecordSet) -> Result<(), CommandError
                 "An eligible E01 opportunity is missing its original assignment.",
             ));
         }
-        let mut events: Vec<_> = s
-            .outcomes
-            .iter()
-            .filter(|e| e.opportunity_id == o.id)
-            .collect();
+        let mut events = outcome_groups.remove(o.id.as_str()).unwrap_or_default();
         events.sort_by_key(|e| e.sequence);
         let mut previous: Option<&OutcomeEvent> = None;
         for (index, e) in events.iter().enumerate() {
@@ -1473,6 +1490,19 @@ pub(crate) fn validate(s: &StudyState, r: &RecordSet) -> Result<(), CommandError
     let mut deliveries = HashSet::new();
     for e in &s.exposures {
         stamp(&e.created_at)?;
+        if e.preference_sequence as usize > s.preferences.len()
+            || s.preferences.iter().any(|p| {
+                if p.sequence <= e.preference_sequence {
+                    p.created_at > e.created_at
+                } else {
+                    p.created_at < e.created_at
+                }
+            })
+        {
+            return Err(invalid(
+                "An exposure's presentation preference prefix is inconsistent.",
+            ));
+        }
         if matches!(
             e.kind,
             ExposureKind::CueDelivered
@@ -1529,8 +1559,10 @@ pub(crate) fn validate(s: &StudyState, r: &RecordSet) -> Result<(), CommandError
                     p.created_at < e.created_at
                 }
             });
-            historical.preferences.clear();
-            let p = presentation_boundary(&historical, &e.created_at);
+            historical
+                .preferences
+                .retain(|p| p.sequence <= e.preference_sequence);
+            let p = presentation(&historical, &e.created_at);
             let expected = if e.kind == ExposureKind::PreviewDelivered {
                 "preview"
             } else {

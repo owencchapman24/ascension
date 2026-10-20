@@ -1040,3 +1040,214 @@ fn retried_delivery_does_not_duplicate_exposure_or_claim_seen() {
             .any(|e| e.kind == ExposureKind::Seen)
     );
 }
+
+#[test]
+fn earlier_disabled_preference_cannot_be_erased_from_imported_delivery_history() {
+    let mut f = Fixture::new();
+    let m = f.protocol(Phase::E01);
+    for n in 0..4 {
+        f.plan(300 + n * 1200, Some(&m));
+    }
+    let w = f.ws();
+    let assignment = w
+        .study
+        .assignments
+        .iter()
+        .find(|a| a.condition == Condition::DPlusB)
+        .unwrap();
+    let opportunity = w
+        .study
+        .opportunities
+        .iter()
+        .find(|o| o.id == assignment.opportunity_id)
+        .unwrap();
+    let preview = (stamp(&opportunity.cue_at).unwrap() - stamp(BASE).unwrap()).num_seconds() - 60;
+    clock(preview);
+    f.service
+        .record_study_exposure(RecordStudyExposureInput {
+            expected_generation: w.generation,
+            opportunity_id: Some(opportunity.id.clone()),
+            kind: ExposureKind::PreviewDelivered,
+            note: None,
+        })
+        .unwrap();
+    clock(preview + 1);
+    f.service
+        .set_construction_enabled(SetConstructionEnabledInput {
+            expected_generation: f.ws().generation,
+            enabled: false,
+        })
+        .unwrap();
+    let before = f.ws();
+    let original: Value = serde_json::from_slice(&f.service.export_bytes().unwrap()).unwrap();
+    for claimed_prefix in [0, 1] {
+        let mut value = original.clone();
+        value["study"]["preferences"][0]["created_at"] = json!(time(preview - 1));
+        value["study"]["exposures"][0]["preference_sequence"] = json!(claimed_prefix);
+        assert!(
+            f.service
+                .preview_import(
+                    &serde_json::to_vec(&value).unwrap(),
+                    "disabled-delivery.json".into()
+                )
+                .is_err()
+        );
+        assert_eq!(f.ws(), before);
+    }
+    let mut missing = original;
+    missing["study"]["exposures"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("preference_sequence");
+    assert!(
+        f.service
+            .preview_import(
+                &serde_json::to_vec(&missing).unwrap(),
+                "missing-prefix.json".into()
+            )
+            .is_err()
+    );
+    assert_eq!(f.ws(), before);
+}
+
+#[test]
+fn enabling_and_delivering_in_one_millisecond_preserves_the_exact_enabled_prefix() {
+    let mut f = Fixture::new();
+    let m = f.protocol(Phase::E01);
+    for n in 0..4 {
+        f.plan(300 + n * 1200, Some(&m));
+    }
+    clock(100);
+    f.service
+        .set_construction_enabled(SetConstructionEnabledInput {
+            expected_generation: f.ws().generation,
+            enabled: false,
+        })
+        .unwrap();
+    let w = f.ws();
+    let assignment = w
+        .study
+        .assignments
+        .iter()
+        .find(|a| a.condition == Condition::DPlusB)
+        .unwrap();
+    let opportunity = w
+        .study
+        .opportunities
+        .iter()
+        .find(|o| o.id == assignment.opportunity_id)
+        .unwrap();
+    let preview = (stamp(&opportunity.cue_at).unwrap() - stamp(BASE).unwrap()).num_seconds() - 60;
+    clock(preview);
+    let input = RecordStudyExposureInput {
+        expected_generation: w.generation,
+        opportunity_id: Some(opportunity.id.clone()),
+        kind: ExposureKind::PreviewDelivered,
+        note: None,
+    };
+    assert!(f.service.record_study_exposure(input.clone()).is_err());
+    let enabled = f
+        .service
+        .set_construction_enabled(SetConstructionEnabledInput {
+            expected_generation: f.ws().generation,
+            enabled: true,
+        })
+        .unwrap();
+    let mut input = input;
+    input.expected_generation = enabled.generation;
+    let delivered = f.service.record_study_exposure(input).unwrap();
+    assert_eq!(delivered.study.exposures[0].preference_sequence, 2);
+    let bytes = f.service.export_bytes().unwrap();
+    let mut other = Fixture::new();
+    let restored = other.restore(&bytes);
+    assert_eq!(restored.study, delivered.study);
+}
+
+#[test]
+fn assignment_positions_cannot_claim_decreasing_valid_issuance_prefixes() {
+    use crate::progress::*;
+    let mut f = Fixture::new();
+    let w = f.ws();
+    let criterion = w.progress.criteria[0].clone();
+    let w = f
+        .service
+        .lock_criterion(LockCriterionInput {
+            expected_generation: w.generation,
+            parent_id: criterion.parent_id.clone(),
+            criterion_lineage_id: criterion.criterion_lineage_id.clone(),
+            criterion_version: criterion.criterion_version,
+        })
+        .unwrap();
+    let w = f
+        .service
+        .record_evidence(RecordEvidenceInput {
+            expected_generation: w.generation,
+            parent_id: criterion.parent_id.clone(),
+            criterion_lineage_id: criterion.criterion_lineage_id.clone(),
+            criterion_version: criterion.criterion_version,
+            kind: EvidenceKind::UserAttestation,
+            description: "Synthetic reproduction documents the cause".into(),
+            reference: None,
+            observed_at: None,
+            status: EvidenceStatus::Supports,
+            assistance: Assistance::None,
+            uncertainty: None,
+            supersedes: None,
+        })
+        .unwrap();
+    let review = f
+        .service
+        .review_progress(ReviewProgressInput {
+            expected_generation: w.generation,
+            parent_id: criterion.parent_id.clone(),
+            criterion_lineage_id: criterion.criterion_lineage_id.clone(),
+            criterion_version: criterion.criterion_version,
+            evidence_refs: vec![w.progress.evidence[0].id.clone()],
+            factual_summary: "Synthetic accepted result".into(),
+            assistance: Assistance::None,
+        })
+        .unwrap();
+    f.service
+        .accept_progress(AcceptProgressInput {
+            schema_version: 1,
+            command_id: new_id(),
+            expected_generation: review.workspace.generation,
+            parent_id: criterion.parent_id,
+            criterion_lineage_id: criterion.criterion_lineage_id,
+            criterion_version: criterion.criterion_version,
+            expected_parent_revision: review.workspace.objectives[0].revision,
+            reviewed_snapshot_id: review.snapshot.id,
+            reviewed_snapshot_digest: review.snapshot.digest,
+            evidence_refs: review.snapshot.evidence_refs,
+            factual_summary: review.snapshot.factual_summary,
+            assistance: Assistance::None,
+        })
+        .unwrap();
+    let m = f.protocol(Phase::E01);
+    f.plan(300, Some(&m));
+    clock(1);
+    f.plan(1500, Some(&m));
+    let before = f.ws();
+    assert_eq!(before.progress.wallet_bc, 4);
+    let mut records: RecordSet =
+        serde_json::from_slice(&f.service.export_bytes().unwrap()).unwrap();
+    let second = records
+        .study
+        .as_mut()
+        .unwrap()
+        .assignments
+        .iter_mut()
+        .find(|a| a.position == 1)
+        .unwrap();
+    second.ledger_sequence = 0;
+    second.issued_bc_at_assignment = 0;
+    assert!(
+        f.service
+            .preview_import(
+                &serde_json::to_vec(&records).unwrap(),
+                "decreasing-prefix.json".into()
+            )
+            .is_err()
+    );
+    assert_eq!(f.ws(), before);
+}
