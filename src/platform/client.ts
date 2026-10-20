@@ -13,6 +13,7 @@ export interface Workspace {
   actions: NextAction[];
   notes: ResumptionNote[];
   progress: ProgressState;
+  study: StudyView;
 }
 export type EvidencePolicy = "user_attestation" | "referenced_evidence" | "trusted_validation";
 export type Assistance = "none" | "assisted" | "generated";
@@ -58,7 +59,7 @@ export interface ProgressState {
   grants: RewardGrant[]; ledger: LedgerEntry[]; audit: AuditEvent[]; commands: CommittedCommand[]; wallet_bc: number;
 }
 export interface SettlementResult { acceptance_id: string; grant_id: string | null; issued_bc: number; balance_bc: number; retained_reward: boolean }
-export interface RecordCounts { projects: number; objectives: number; actions: number; notes: number; criteria: number; evidence: number; snapshots: number; acceptances: number; corrections: number; grants: number; ledger: number; commands: number; wallet_bc: number }
+export interface RecordCounts { projects: number; objectives: number; actions: number; notes: number; criteria: number; evidence: number; snapshots: number; acceptances: number; corrections: number; grants: number; ledger: number; commands: number; wallet_bc: number; opportunities: number; assignments: number; outcome_events: number; study_manifests: number; schedule_epochs: number; exposures: number; burdens: number; reflections: number }
 export interface ExportResult { file_name: string }
 export interface ImportPreview {
   token: string;
@@ -120,6 +121,73 @@ export const reviewProgress = (input: ReviewProgressInput) => command<{ workspac
 export const acceptProgress = (input: AcceptProgressInput) => command<{ workspace: Workspace; result: SettlementResult }>("accept_progress", input);
 export const correctAcceptance = (input: CorrectAcceptanceInput) => command<Workspace>("correct_acceptance", input);
 export const rejectReview = (input: RejectReviewInput) => command<Workspace>("reject_review", input);
+
+export type StudyPhase = "e00" | "e01";
+export type StudyStatus = "configured" | "ready" | "active" | "paused" | "completed" | "abandoned";
+export type AssignedCondition = "d" | "d_plus_b";
+export type OutcomeState = "pending" | "observed_start" | "observed_nonstart" | "missing";
+export type TimePrecision = "exact" | "approximate" | "unknown";
+export type ExposureKind = "cue_delivered" | "preview_delivered" | "checkpoint_delivered" | "seen" | "voluntary_world" | "deviation";
+export type BurdenCategory = "planning" | "logging" | "review" | "game" | "correction" | "other" | "useful_work";
+export interface ScheduleEpoch { id: string; label: string; effective_from: string; timezone: string; created_at: string }
+export interface StudyManifest {
+  id: string; phase: StudyPhase; protocol_version: string; created_at: string; epoch_id: string;
+  algorithm: string; block_size: number; allocation_hash: string; window_seconds: number; preview_seconds: number;
+  reveal_rule: string; presentation_policy: string; analysis_definition: string; review_after: number[]; status: StudyStatus;
+}
+export interface ProtocolEvent { id: string; manifest_id: string; status: StudyStatus; reason: string; acknowledgements: string[]; created_at: string; sequence: number }
+export interface WorkOpportunity {
+  id: string; project_id: string; objective_id: string; criterion_id: string; criterion_version: number; criterion_snapshot: string; criterion_registry_revision: number;
+  action_id: string; action_revision: number; action_snapshot: string; stop_snapshot: string;
+  domain: string; meaningful_start: string; cue_at: string; window_seconds: number; timezone: string;
+  epoch_id: string; eligible: boolean; eligibility_decided_at: string; unavailability: string | null;
+  priority: "ordinary" | "high"; available_minutes: number; deadline_at: string | null; context: string | null;
+  manifest_id: string | null; protocol_event_id: string | null; created_at: string; outcome_state: OutcomeState;
+}
+export interface StudyAssignment { id: string; opportunity_id: string; manifest_id: string; position: number; condition: AssignedCondition | null; assigned_at: string; issued_bc_at_assignment: number; h1_saturated: boolean; ledger_sequence: number }
+export interface OpportunityOutcome {
+  id: string; opportunity_id: string; sequence: number; report: "started" | "nonstart" | "unknown"; started_at: string | null;
+  precision: TimePrecision; uncertainty_seconds: number | null; observed_at: string; source: string; note: string | null;
+  technical_failure: boolean; uncertainty_reason: string | null; correction_reason: string | null; supersedes: string | null;
+  state: OutcomeState; latency_seconds: number | null; censored_at_seconds: number | null; late_start: boolean;
+  priority_advanced: boolean | null; quality_note: string | null; acceptance_id: string | null;
+}
+export interface StudyExposure { id: string; opportunity_id: string | null; kind: ExposureKind; note: string | null; created_at: string; issued_bc: number; h1_saturated: boolean; ledger_sequence: number; protocol_event_id: string | null; preference_sequence: number }
+export interface StudyBurden { id: string; opportunity_id: string | null; category: BurdenCategory; minutes: number; note: string | null; created_at: string; method: string }
+export interface StudyReflection { id: string; manifest_id: string | null; note: string; created_at: string }
+export interface StudyPresentation { opportunity_id: string | null; condition: AssignedCondition | null; boundary: "none" | "preview" | "checkpoint"; world_allowed: boolean; enabled: boolean }
+export interface StudyView {
+  epochs: ScheduleEpoch[]; manifests: StudyManifest[]; protocol_events: ProtocolEvent[]; opportunities: WorkOpportunity[];
+  assignments: StudyAssignment[]; outcomes: OpportunityOutcome[]; exposures: StudyExposure[]; burdens: StudyBurden[];
+  reflections: StudyReflection[]; presentation: StudyPresentation;
+  preferences: { id: string; sequence: number; enabled: boolean; created_at: string }[];
+}
+export interface CreateScheduleEpochInput extends GenerationInput { label: string; effective_from: string; timezone: string }
+export interface ConfigureStudyInput extends GenerationInput { phase: StudyPhase; epoch_id: string }
+export interface TransitionStudyInput extends GenerationInput { manifest_id: string; status: Exclude<StudyStatus, "configured">; reason: string; acknowledgements: string[] }
+export interface PlanOpportunityInput extends GenerationInput {
+  objective_id: string; epoch_id: string; manifest_id: string | null; domain: string; meaningful_start: string;
+  cue_at: string; timezone: string; window_seconds: number; eligible: boolean; unavailability: string | null;
+  priority: "ordinary" | "high"; available_minutes: number; deadline_at: string | null; context: string | null;
+}
+export interface RecordOpportunityOutcomeInput extends GenerationInput {
+  opportunity_id: string; report: "started" | "nonstart" | "unknown"; started_at: string | null;
+  precision: TimePrecision; uncertainty_seconds: number | null; note: string | null;
+  technical_failure: boolean; uncertainty_reason: string | null; correction_reason: string | null;
+  priority_advanced: boolean | null; quality_note: string | null; acceptance_id: string | null;
+}
+export interface RecordStudyExposureInput extends GenerationInput { opportunity_id: string | null; kind: ExposureKind; note: string | null }
+export interface RecordStudyBurdenInput extends GenerationInput { opportunity_id: string | null; category: BurdenCategory; minutes: number; note: string | null }
+export interface RecordStudyReflectionInput extends GenerationInput { manifest_id: string | null; note: string }
+export const createScheduleEpoch = (input: CreateScheduleEpochInput) => command<Workspace>("create_schedule_epoch", input);
+export const configureStudy = (input: ConfigureStudyInput) => command<Workspace>("configure_study", input);
+export const transitionStudy = (input: TransitionStudyInput) => command<Workspace>("transition_study", input);
+export const planOpportunity = (input: PlanOpportunityInput) => command<Workspace>("plan_opportunity", input);
+export const recordOpportunityOutcome = (input: RecordOpportunityOutcomeInput) => command<Workspace>("record_opportunity_outcome", input);
+export const recordStudyExposure = (input: RecordStudyExposureInput) => command<Workspace>("record_study_exposure", input);
+export const recordStudyBurden = (input: RecordStudyBurdenInput) => command<Workspace>("record_study_burden", input);
+export const recordStudyReflection = (input: RecordStudyReflectionInput) => command<Workspace>("record_study_reflection", input);
+export const setConstructionEnabled = (input: GenerationInput & { enabled: boolean }) => command<Workspace>("set_construction_enabled", input);
 
 export function normalizeError(error: unknown): CommandError {
   if (typeof error === "object" && error !== null && "code" in error && "message" in error && typeof error.code === "string" && typeof error.message === "string") {

@@ -58,6 +58,38 @@ describe("desktop command boundary", () => {
     expect(client.normalizeError("unexpected internal payload").message).not.toContain("unexpected internal payload");
   });
 
+  it("serializes opportunity declarations and uncertain observations without reward authority", async () => {
+    const plan: client.PlanOpportunityInput = { expected_generation: "generation", objective_id: "objective", epoch_id: "epoch", manifest_id: null, domain: "coding", meaningful_start: "Reproduce the named failure", cue_at: "2026-10-19T12:00:00.000Z", timezone: "UTC", window_seconds: 900, eligible: true, unavailability: null, priority: "ordinary", available_minutes: 30, deadline_at: null, context: null };
+    await client.planOpportunity(plan); expect(invoke).toHaveBeenLastCalledWith("plan_opportunity", { input: plan });
+    const observation: client.RecordOpportunityOutcomeInput = { expected_generation: "generation", opportunity_id: "opportunity", report: "unknown", started_at: null, precision: "unknown", uncertainty_seconds: null, note: null, technical_failure: true, uncertainty_reason: "App unavailable; timing unknown", correction_reason: null, priority_advanced: null, quality_note: null, acceptance_id: null };
+    await client.recordOpportunityOutcome(observation); expect(invoke).toHaveBeenLastCalledWith("record_opportunity_outcome", { input: observation });
+    expect(observation).not.toHaveProperty("latency_seconds"); expect(observation).not.toHaveProperty("state"); expect(plan).not.toHaveProperty("condition"); expect(plan).not.toHaveProperty("amount_bc");
+  });
+
+  it("uses typed explicit lifecycle, exposure, burden and preference commands", async () => {
+    const epoch = { expected_generation: "generation", label: "Synthetic routine", effective_from: "2026-01-01T00:00:00.000Z", timezone: "UTC" };
+    await client.createScheduleEpoch(epoch); expect(invoke).toHaveBeenLastCalledWith("create_schedule_epoch", { input: epoch });
+    const config = { expected_generation: "generation", phase: "e00" as const, epoch_id: "epoch" };
+    await client.configureStudy(config); expect(invoke).toHaveBeenLastCalledWith("configure_study", { input: config });
+    const transition = { expected_generation: "generation", manifest_id: "manifest", status: "active" as const, reason: "Owner explicitly starts E00", acknowledgements: [] };
+    await client.transitionStudy(transition); expect(invoke).toHaveBeenLastCalledWith("transition_study", { input: transition });
+    const exposure = { expected_generation: "generation", opportunity_id: "opportunity", kind: "seen" as const, note: "Self-reported" };
+    await client.recordStudyExposure(exposure); expect(invoke).toHaveBeenLastCalledWith("record_study_exposure", { input: exposure });
+    const burden = { expected_generation: "generation", opportunity_id: null, category: "logging" as const, minutes: 2, note: null };
+    await client.recordStudyBurden(burden); expect(invoke).toHaveBeenLastCalledWith("record_study_burden", { input: burden });
+    const reflection = { expected_generation: "generation", manifest_id: null, note: "Synthetic weekly reflection" };
+    await client.recordStudyReflection(reflection); expect(invoke).toHaveBeenLastCalledWith("record_study_reflection", { input: reflection });
+    const preference = { expected_generation: "generation", enabled: false };
+    await client.setConstructionEnabled(preference); expect(invoke).toHaveBeenLastCalledWith("set_construction_enabled", { input: preference });
+  });
+
+  it("cannot plan, enroll, log, or toggle construction from a browser-only connection", async () => {
+    vi.mocked(isTauri).mockReturnValue(false);
+    await expect(client.configureStudy({ expected_generation: "g", phase: "e01", epoch_id: "e" })).rejects.toThrow("native desktop connection");
+    await expect(client.setConstructionEnabled({ expected_generation: "g", enabled: true })).rejects.toThrow("native desktop connection");
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it("sends bounded progress inputs without supplying actor, grants, wallet or reward authority", async () => {
     const identity = { expected_generation: "generation", parent_id: "parent", criterion_lineage_id: "lineage", criterion_version: 2 };
     const criterion = { expected_generation: "generation", parent_id: "parent", criterion_lineage_id: "lineage", description: "Four labels", allocation_bc: 4,

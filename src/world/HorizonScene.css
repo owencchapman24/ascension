@@ -1,0 +1,52 @@
+.horizon-scene {
+  margin: 24px 0;
+  overflow: hidden;
+  border: 1px solid #bcc9ad;
+  border-radius: 14px;
+  color: #273e36;
+  background: #f7f5eb;
+  isolation: isolate;
+}
+.horizon-heading { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 22px 26px 18px; }
+.horizon-eyebrow { color: #5c6e58; margin: 0 0 4px; font-size: .76rem; letter-spacing: .12em; text-transform: uppercase; }
+.horizon-heading h3 { margin: 0; color: #304c42; font-family: Georgia, "Times New Roman", serif; font-size: 1.65rem; font-weight: 400; line-height: 1.25; }
+.horizon-count { flex-shrink: 0; margin: 0; text-align: right; line-height: 1.4; }
+.horizon-count strong { display: block; color: #304c42; font-size: 1.35rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.horizon-count strong span { color: #5b6f5c; font-weight: 400; font-size: 1rem; }
+.horizon-count > span { display: block; color: #52674f; font-size: .74rem; }
+.horizon-art { display: block; width: 100%; height: auto; background: #bbc69e; }
+.horizon-description { padding: 20px 26px; border-top: 1px solid #bec9a9; }
+.horizon-description p { margin: 0 0 7px; font-size: .95rem; line-height: 1.55; }
+.horizon-description p:last-child { margin-bottom: 0; }
+.horizon-description .horizon-policy-note { color: #536750; font-size: .83rem; }
+.horizon-description .horizon-overflow { color: #4f654e; margin-top: 10px; font-size: .88rem; }
+.horizon-restoration-list { margin-top: 16px; font-size: .85rem; }
+.horizon-restoration-list summary { width: fit-content; cursor: pointer; color: #365c4c; text-decoration: underline; text-underline-offset: 3px; }
+.horizon-restoration-list summary:focus-visible { outline: 3px solid #1d7189; outline-offset: 4px; border-radius: 2px; }
+.horizon-restoration-list ol { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 38px; row-gap: 0; padding-left: 24px; margin: 16px 0 0; }
+.horizon-restoration-list li { padding: 6px 0; margin: 0; border-bottom: 1px solid #dde1cd; break-inside: avoid; }
+.horizon-restoration-list li > span:first-child { display: block; }
+.horizon-unit-status { color: #566b51; font-size: .75rem; }
+.horizon-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.horizon-preview .horizon-heading { padding: 14px 18px; }
+.horizon-preview .horizon-heading h3 { font-size: 1.3rem; }
+.horizon-preview .horizon-art { max-height: 250px; }
+.horizon-preview .horizon-description { padding: 14px 18px; }
+/* Deliberately static: every unit and the completed beacon can be inspected
+   without waiting. No animation is required, including under reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  .horizon-scene *, .horizon-scene *::before, .horizon-scene *::after { animation: none !important; transition: none !important; }
+}
+@media (max-width: 600px) {
+  .horizon-heading { padding: 18px 16px; gap: 12px; align-items: flex-start; }
+  .horizon-heading h3 { font-size: 1.35rem; }
+  .horizon-eyebrow { font-size: .66rem; letter-spacing: .08em; }
+  .horizon-count strong { font-size: 1.1rem; }
+  .horizon-count > span { max-width: 75px; font-size: .68rem; }
+  .horizon-description { padding: 16px; }
+  .horizon-restoration-list ol { grid-template-columns: 1fr; }
+}
+@media (forced-colors: active) {
+  .horizon-scene { border: 1px solid CanvasText; }
+  .horizon-art { forced-color-adjust: none; }
+}

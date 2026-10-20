@@ -5,6 +5,8 @@ import App from "../App";
 import * as api from "../platform/client";
 import type { ImportPreview, Workspace } from "../platform/client";
 import { emptyProgress, progressWorkspace } from "../progress/__tests__/fixtures";
+import { emptyStudy } from "../study/emptyStudy";
+import { epoch as studyEpoch } from "../study/__tests__/fixtures";
 
 vi.mock("../platform/client", async (importOriginal) => {
   const original = await importOriginal<typeof api>();
@@ -17,6 +19,7 @@ const secondId = "00000000-0000-4000-8000-000000000005";
 const generation = "00000000-0000-4000-8000-000000000010";
 const metadata = { revision: 1, created_at: "2026-10-16T12:00:00.000Z", updated_at: "2026-10-16T12:00:00.000Z" };
 const saved: Workspace = {
+  study: emptyStudy,
   generation, selected_objective_id: objectiveId,
   projects: [{ ...metadata, id: projectId, title: "Sample garden" }],
   objectives: [{ ...metadata, id: objectiveId, project_id: projectId, title: "Plan a small herb bed", criterion: "A diagram names three herbs and their positions." }, { ...metadata, id: secondId, project_id: projectId, title: "List supplies", criterion: "A list includes soil and containers." }],
@@ -24,7 +27,7 @@ const saved: Workspace = {
   notes: [{ ...metadata, id: "00000000-0000-4000-8000-000000000004", objective_id: objectiveId, text: "Compare the sunny corner next time." }],
   progress: emptyProgress,
 };
-const progressCounts = { criteria: 1, evidence: 2, snapshots: 1, acceptances: 1, corrections: 0, grants: 1, ledger: 1, commands: 1, wallet_bc: 4 };
+const progressCounts = { criteria: 1, evidence: 2, snapshots: 1, acceptances: 1, corrections: 0, grants: 1, ledger: 1, commands: 1, wallet_bc: 4, opportunities: 0, assignments: 0, outcome_events: 0, study_manifests: 0, schedule_epochs: 0, exposures: 0, burdens: 0, reflections: 0 };
 const incoming: ImportPreview = { token: "00000000-0000-4000-8000-000000000020", generation, file_name: "sample-records.json", schema_version: 2,
   warning: "Complete replacement includes accepted progress and reward history.", current_counts: { projects: 1, objectives: 2, actions: 1, notes: 1, ...progressCounts }, incoming_counts: { projects: 2, objectives: 3, actions: 2, notes: 0, ...progressCounts, wallet_bc: 2 } };
 
@@ -50,6 +53,16 @@ describe("Work", () => {
     expect(context).not.toHaveAttribute("open");
     expect(screen.getByRole("heading", { name: "Sketch the bed on paper" }).compareDocumentPosition(context!))
       .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it("guards an unsaved opportunity before switching work and restores its input focus", async () => {
+    vi.mocked(api.loadWorkspace).mockResolvedValue({ ...saved, study: { ...emptyStudy, epochs: [studyEpoch] } });
+    const user = userEvent.setup(); await ready();
+    await user.click(screen.getByText(/Work opportunities/)); await user.click(screen.getByRole("button", { name: "Plan an opportunity" }));
+    const definition = screen.getByLabelText("What observable first action will count as a meaningful start?"); await user.clear(definition); await user.type(definition, "Keep this prospective definition");
+    await user.selectOptions(screen.getByLabelText("Parent objective"), secondId);
+    expect(screen.getByRole("dialog", { name: "Keep your unsaved draft?" })).toBeInTheDocument(); expect(api.selectObjective).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Keep editing" })); expect(definition).toHaveValue("Keep this prospective definition"); await waitFor(() => expect(definition).toHaveFocus());
   });
 
   it("edits project and objective fields without changing their relationships", async () => {
