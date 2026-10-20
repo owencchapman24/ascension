@@ -1,11 +1,25 @@
 use crate::domain::*;
+use crate::progress::{self, *};
 use crate::storage::Repository;
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 struct PendingImport {
     token: String,
     generation: String,
     records: RecordSet,
+    source_schema: u32,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ReviewResult {
+    pub workspace: Workspace,
+    pub snapshot: ReviewSnapshot,
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct AcceptanceResult {
+    pub workspace: Workspace,
+    pub result: SettlementResult,
 }
 
 pub struct WorkspaceService {
@@ -15,6 +29,56 @@ pub struct WorkspaceService {
 }
 
 impl WorkspaceService {
+    pub fn save_criterion(&mut self, input: SaveCriterionInput) -> Result<Workspace, CommandError> {
+        self.repository
+            .progress_change(|connection| progress::save_criterion(connection, input))
+            .map(|(workspace, ())| workspace)
+    }
+    pub fn lock_criterion(&mut self, input: LockCriterionInput) -> Result<Workspace, CommandError> {
+        self.repository
+            .progress_change(|connection| progress::lock_criterion(connection, input))
+            .map(|(workspace, ())| workspace)
+    }
+    pub fn record_evidence(
+        &mut self,
+        input: RecordEvidenceInput,
+    ) -> Result<Workspace, CommandError> {
+        self.repository
+            .progress_change(|connection| progress::record_evidence(connection, input))
+            .map(|(workspace, ())| workspace)
+    }
+    pub fn review_progress(
+        &mut self,
+        input: ReviewProgressInput,
+    ) -> Result<ReviewResult, CommandError> {
+        self.repository
+            .progress_change(|connection| progress::review(connection, input))
+            .map(|(workspace, snapshot)| ReviewResult {
+                workspace,
+                snapshot,
+            })
+    }
+    pub fn accept_progress(
+        &mut self,
+        input: AcceptProgressInput,
+    ) -> Result<AcceptanceResult, CommandError> {
+        self.repository
+            .progress_change(|connection| progress::accept(connection, input))
+            .map(|(workspace, result)| AcceptanceResult { workspace, result })
+    }
+    pub fn correct_acceptance(
+        &mut self,
+        input: CorrectAcceptanceInput,
+    ) -> Result<Workspace, CommandError> {
+        self.repository
+            .progress_change(|connection| progress::correct(connection, input))
+            .map(|(workspace, ())| workspace)
+    }
+    pub fn reject_review(&mut self, input: RejectReviewInput) -> Result<Workspace, CommandError> {
+        self.repository
+            .progress_change(|connection| progress::reject(connection, input))
+            .map(|(workspace, ())| workspace)
+    }
     pub fn open(db_path: &Path, backup_dir: &Path) -> Result<Self, CommandError> {
         Ok(Self {
             repository: Repository::open(db_path, backup_dir)?,
@@ -241,19 +305,22 @@ impl WorkspaceService {
     ) -> Result<ImportPreview, CommandError> {
         // Failed replacement previews must never leave an earlier file confirmable.
         self.discard_preview();
-        let records = parse_import(bytes)?;
+        let (records, source_schema) = parse_import(bytes)?;
         let workspace = self.repository.load()?;
+        if source_schema == 1 && !workspace.progress.grants.is_empty() {
+            return Err(CommandError::new(
+                "unsafe_legacy_import",
+                "A legacy v1 export cannot replace earned reward history. Choose a complete Stage 3b export.",
+            ));
+        }
         let token = new_id();
-        let incoming_counts = RecordCounts {
-            projects: records.projects.len(),
-            objectives: records.objectives.len(),
-            actions: records.actions.len(),
-            notes: records.notes.len(),
-        };
+        let incoming_counts =
+            RecordCounts::from(&records.clone().into_workspace(workspace.generation.clone()));
         self.pending_import = Some(PendingImport {
             token: token.clone(),
             generation: workspace.generation.clone(),
             records,
+            source_schema,
         });
         Ok(ImportPreview {
             token,
@@ -261,6 +328,12 @@ impl WorkspaceService {
             file_name,
             current_counts: RecordCounts::from(&workspace),
             incoming_counts,
+            schema_version: source_schema,
+            warning: if source_schema == 1 {
+                "Legacy v1: criteria become unaccepted drafts; no credits are created. Legacy files cannot replace earned history.".into()
+            } else {
+                "Complete replacement includes criteria, evidence, acceptances, corrections, and reward history. History absent from this file will be removed. A complete recovery backup is saved first.".into()
+            },
         })
     }
 
@@ -277,6 +350,7 @@ impl WorkspaceService {
             &input.expected_generation,
             pending.records.clone(),
             &self.backup_dir,
+            pending.source_schema,
         )?;
         self.pending_import = None;
         Ok(result)

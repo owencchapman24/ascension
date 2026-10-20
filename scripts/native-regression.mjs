@@ -3,12 +3,15 @@
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
 import { once } from 'node:events';
-import { readFile, writeFile, readdir, rename, unlink, stat } from 'node:fs/promises';
+import { readFile, writeFile, readdir, rename, unlink, stat, mkdir } from 'node:fs/promises';
+import { DatabaseSync } from 'node:sqlite';
+import { randomUUID } from 'node:crypto';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { verifyOffline } from './native-offline.mjs';
+import { verifyProgress } from './native-progress.mjs';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const root = path.resolve(process.argv[2] ?? '');
@@ -93,9 +96,13 @@ function nativeDialog(title, action = 'Inspect', selectedPath = '') {
   if (action !== 'Inspect') dialogs.push(JSON.parse(output));
   return output;
 }
-const recordSet = value => ({ format: 'ascension-records', schema_version: 1,
+const recordSet = value => ({ format: 'ascension-records', schema_version: 2,
   selected_objective_id: value.selected_objective_id,
-  ...Object.fromEntries(['projects', 'objectives', 'actions', 'notes'].map(key => [key, [...value[key]].sort((a, b) => a.id.localeCompare(b.id))])) });
+  ...Object.fromEntries(['projects', 'objectives', 'actions', 'notes'].map(key => [key, [...value[key]].sort((a, b) => a.id.localeCompare(b.id))])),
+  progress: value.progress });
+const counts = value => [...['projects', 'objectives', 'actions', 'notes'].map(key => value[key].length),
+  ...['criteria', 'evidence', 'snapshots', 'acceptances', 'corrections', 'grants', 'ledger', 'commands'].map(key => value.progress[key].length), value.progress.wallet_bc];
+const emptyProgress = () => ({registry_revision:0,parents:[],slots:[],criteria:[],evidence:[],validators:[],snapshots:[],acceptances:[],corrections:[],grants:[],ledger:[],audit:[],commands:[],wallet_bc:0});
 const backupsRoot = path.join(root, 'profile', 'backups');
 async function backups() {
   try { return (await readdir(backupsRoot)).filter(name => name.endsWith('.json')).sort(); }
@@ -115,7 +122,7 @@ async function previewFile(target, current, incoming) {
   await until(() => evaluate("document.querySelector('[role=dialog]')?.getAttribute('aria-label') === 'Review import'"), 'native import preview');
   assert.deepEqual(await workspace(), current, 'Preview cannot change saved state or generation');
   const rows = await evaluate("Array.from(document.querySelectorAll('[role=dialog] tbody tr')).map(row => Array.from(row.querySelectorAll('td')).map(cell => Number(cell.textContent)))");
-  assert.deepEqual(rows, ['projects', 'objectives', 'actions', 'notes'].map(key => [current[key].length, incoming[key].length]));
+  assert.deepEqual(rows, counts(current).map((count, index) => [count, counts(incoming)[index]]));
   assert.ok(await evaluate("document.querySelector('[role=dialog]').textContent.includes('Records missing from the file will be removed.')"));
   assert.equal(await focused(), 'Cancel import');
 }
@@ -192,6 +199,44 @@ try {
   const probe = net.connect({ host: '127.0.0.1', port: 9 });
   probe.setTimeout(2000, () => probe.destroy(new Error('Proxy probe timed out')));
   await assert.rejects(once(probe, 'connect'), { code: 'ECONNREFUSED' });
+  // Seed only this invocation's fresh, containment-checked disposable profile.
+  // Both historical migrations are executed unchanged using Node's local SQLite.
+  const legacy = JSON.parse(await readFile(path.join(repository, 'contracts', 'fixtures', 'sample-v1.json'), 'utf8'));
+  const profile = path.join(root, 'profile');
+  await assert.rejects(stat(profile), {code:'ENOENT'});
+  await mkdir(profile);
+  const legacyDatabase = new DatabaseSync(path.join(profile, 'ascension.sqlite3'));
+  try {
+    legacyDatabase.exec(await readFile(path.join(repository,'src-tauri','migrations','001_records.sql'),'utf8'));
+    legacyDatabase.exec(await readFile(path.join(repository,'src-tauri','migrations','002_workspace_state.sql'),'utf8'));
+    for (const p of legacy.projects) legacyDatabase.prepare('INSERT INTO projects VALUES (?,?,?,?,?)').run(p.id,p.title,p.revision,p.created_at,p.updated_at);
+    for (const o of legacy.objectives) legacyDatabase.prepare('INSERT INTO objectives VALUES (?,?,?,?,?,?,?)').run(o.id,o.project_id,o.title,o.criterion,o.revision,o.created_at,o.updated_at);
+    for (const a of legacy.actions) legacyDatabase.prepare('INSERT INTO actions VALUES (?,?,?,?,?,?,?)').run(a.id,a.objective_id,a.description,a.stop_condition,a.revision,a.created_at,a.updated_at);
+    for (const n of legacy.notes) legacyDatabase.prepare('INSERT INTO notes VALUES (?,?,?,?,?,?)').run(n.id,n.objective_id,n.text,n.revision,n.created_at,n.updated_at);
+    legacyDatabase.prepare('INSERT INTO workspace_state VALUES (1,?,?)').run(randomUUID(),legacy.selected_objective_id);
+    legacyDatabase.exec('PRAGMA user_version=2');
+  } finally { legacyDatabase.close(); }
+  await launch();
+  const migrated = await workspace();
+  for (const key of ['projects','objectives','actions','notes']) assert.deepEqual(migrated[key],legacy[key]);
+  assert.equal(migrated.selected_objective_id,legacy.selected_objective_id);
+  assert.equal(migrated.progress.wallet_bc,0);
+  assert.equal(migrated.progress.acceptances.length,0);
+  assert.equal(migrated.progress.grants.length,0);
+  assert.ok(migrated.progress.criteria.every(c=>c.state==='draft'));
+  const migrationFiles=(await readdir(backupsRoot)).filter(name=>name.endsWith('.sqlite3'));
+  assert.equal(migrationFiles.length,1);
+  const backupDb = new DatabaseSync(path.join(backupsRoot,migrationFiles[0]), {readOnly:true});
+  try {
+    assert.equal(backupDb.prepare('PRAGMA user_version').get().user_version,2);
+    assert.equal(backupDb.prepare('PRAGMA integrity_check').get().integrity_check,'ok');
+    assert.equal(backupDb.prepare('SELECT COUNT(*) count FROM objectives').get().count,legacy.objectives.length);
+  } finally { backupDb.close(); }
+  checks.push('Installed migration of populated Stage 3a v2 preserves every legacy field and creates a readable v2 recovery backup; draft criteria, no rewards');
+  await closeApplication();
+  // Both paths are fixed children of the validated invocation root. Preserve
+  // all migration evidence while starting the rest of the suite with no records.
+  await until(async()=>{await rename(profile,path.join(root,'migration-profile'));return true;},'release migrated disposable profile');
   await launch();
   assert.equal((await workspace()).projects.length, 0);
   await clickButton('Create your first project');
@@ -379,7 +424,7 @@ try {
   assert.equal((await backups()).length, 3);
   checks.push('Failed import backup preserves exact local state; repairing only the disposable fixture allows fresh native preview/restore');
 
-  const empty = { ...original, selected_objective_id: null, projects: [], objectives: [], actions: [], notes: [] };
+  const empty = { ...original, selected_objective_id: null, projects: [], objectives: [], actions: [], notes: [], progress:emptyProgress() };
   const emptyPath = path.join(root, 'empty.json');
   await writeFile(emptyPath, JSON.stringify(empty), 'utf8');
   await restoreFile(emptyPath, await workspace(), empty);
@@ -404,6 +449,8 @@ try {
   await launch();
   assert.deepEqual(await workspace(), finalWorkspace);
   checks.push('Abrupt process stop/reopen retains the exact last acknowledged workspace');
+  await verifyProgress({evaluate,clientSend:(...args)=>client.send(...args),clickButton,typeAt,workspace,until,notice,root,recordSet,exportFile,restoreFile,
+    nativeDialog,ready,closeApplication,launch,checks,emptyProgress});
   await closeApplication();
   await writeFile(path.join(root, 'native-result.json'), JSON.stringify({ passed: true, checks, dialogs, offline,
     limitations: ['Offline denial is scoped to WebView2; Rust/OS-wide networking is not blocked.', 'Interruption tested before import confirmation and after acknowledged writes, not during a physical power failure.'] }, null, 2));

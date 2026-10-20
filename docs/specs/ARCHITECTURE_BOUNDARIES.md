@@ -1,5 +1,7 @@
 # Ascension architecture boundaries — Stage 3a
 
+Stage 3b authorization: the owner approved the extension in [STAGE_3B.md](STAGE_3B.md) after PR #1 merged. The Stage 3a separation below remains the baseline. Stage 3b adds private Rust criterion/evidence/acceptance/issuance transactions and complete interchange v2; ordinary mutations must use targeted writes. Later game, AI, scanning, experiments, and spending remain excluded. The historical "do not implement" section below describes the original Stage 3a boundary, not a prohibition on the now-authorized Stage 3b subset.
+
 ## Initial implementation approach
 
 A small local desktop application, **not** microservices. UI: React/TypeScript/Vite. Shell: Tauri 2. Domain and persistence: Rust with typed Tauri commands and `rusqlite` backed by SQLite. The data layer must be private to Rust; no generic SQL plugin exposed to the renderer. The implementation agent must verify installed Windows prerequisites and compatible versions before scaffolding.

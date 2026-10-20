@@ -1,10 +1,10 @@
 # Ascension
 
-Ascension is a Windows-first, local-first workspace for resuming a concrete next action. Development is limited to the [Stage 3a offline vertical slice](docs/specs/STAGE_3A.md): a project, bounded parent objective, explicit criterion, next action, stopping condition, and optional resumption note, with durable local storage and versioned export/restore.
+Ascension is a Windows-first, local-first workspace for resuming a concrete next action. The authorized [Stage 3b scope](docs/specs/STAGE_3B.md) extends the saved project/objective/action/note workflow with prospective criteria, progress evidence, local user acceptance, corrections, and fictional Build Credit issuance. It requires no AI, game, account, or network service.
 
-**Stage 3a is implemented; the engineering review recommendation is PASS.** All 37 Rust tests and 30 UI/client tests pass, along with typechecking, builds, formatting and strict Clippy. The current installed Windows build passes 20 lifecycle checkpoints, including 19 real file-dialog interactions and four controlled offline probes. Native export/restore, identity preservation, rejection and backup recovery are verified. See the [executed verification log](docs/implementation/STAGE_3A_VERIFICATION.md#verification-closure--2026-10-19) for build identities and remaining limits. Stage 3b's engineering gate is satisfied; implementation still requires separate owner authorization.
+Stage 3a was verified and merged in PR #1. Stage 3b implementation and verification are tracked in the [Stage 3b executed verification log](docs/implementation/STAGE_3B_VERIFICATION.md). Historical Stage 3a results remain in its [verification log](docs/implementation/STAGE_3A_VERIFICATION.md#verification-closure--2026-10-19).
 
-Stage 3a must let someone save an action and note, close the app, and recover them immediately after reopening offline. It includes safe, explicit restoration of versioned records with stable identities. It excludes AI, a game economy, completion validation, accounts, cloud sync, telemetry, payments, and automatic ingestion.
+The Work view keeps the next action and resumption note primary. Progress review is optional and fictional rewards start hidden. No timer or task click demonstrates accomplishment. There is no game, spending, external verification runner, cloud sync, telemetry, payment, or automatic ingestion.
 
 ## Architecture
 
@@ -13,9 +13,11 @@ The accepted stack is React + TypeScript + Vite, a Tauri 2 desktop shell, and pr
 - [Architecture boundaries](docs/specs/ARCHITECTURE_BOUNDARIES.md)
 - [ADR-0001: initial scope](docs/decisions/ADR-0001-initial-scope.md)
 - [ADR-0002: records, selection, and explicit restore](docs/decisions/ADR-0002-stage-3a-records-and-restore.md)
+- [ADR-0003: targeted ordinary mutations](docs/decisions/ADR-0003-targeted-mutations.md)
+- [ADR-0004: progress authority and portability](docs/decisions/ADR-0004-progress-authority-and-portability.md)
 - [Record, command, and interchange contracts](contracts/README.md)
 
-The contract defines the implemented command shapes, stable record identities, validation limits, and schema-version-1 interchange format. Database migration versions are separate from export schema versions.
+The contract defines typed commands, stable identities, validation limits, complete interchange v2 and bounded legacy v1 imports. Database migration versions are separate from export schema versions.
 
 ## Work flow
 
@@ -25,6 +27,8 @@ The contract defines the implemented command shapes, stable record identities, v
 4. Edit the saved records as needed. Failed saves keep the draft and the previously saved state visible. Switching away from an unsaved draft requires an explicit discard choice.
 
 Each objective has at most one action and one note. Clearing a note removes that optional record; adding a note later creates a new identity. No click or timer marks an objective accomplished.
+
+Expand **Progress and evidence** to review and lock a criterion before eligible work. Record concise evidence, save a review snapshot, inspect its complete registered basis, then accept, reject, or leave it pending. Locked criteria require prospective new versions; an objective's lifetime allocation never exceeds four fictional BC. Accepted progress and rewards are distinct. Corrections preserve history and retain issued credits while keeping the entitlement consumed. Reacceptance requires fresh review and cannot mint the original allocation again. **Show fictional rewards** reveals the ledger-derived balance; the normal work workflow remains available with it hidden.
 
 ## Windows prerequisites
 
@@ -74,7 +78,7 @@ The automated test, typecheck, frontend build, and formatting commands passed fo
 
 The final `-- --locked` forwards the lockfile requirement to Cargo. Tauri runs the frontend build and creates the configured NSIS installer under `src-tauri/target/release/bundle/nsis/`. The normal package is named `Ascension_0.1.0_x64-setup.exe`; the new isolated harness produces `Ascension Verification <run-id>_0.1.0_x64-setup.exe`.
 
-For repeatable installed-app lifecycle checks, run `scripts/verify-native.ps1`. It builds a unique verification package, silently installs into an ignored repository-local directory, verifies its actual disposable data path, drives its WebView2 UI through loopback CDP and real Windows file dialogs through a bounded UIA/Win32 helper, then uninstalls that test package. No normal user profile is opened. The [verification log](docs/implementation/STAGE_3A_VERIFICATION.md) records the exact invocation for shells that disable `.ps1` files, plus results and limits. The harness covers keyboard entry/save, editing, focus/validation, export/import, rejection, backups, graceful restart and abrupt-stop recovery.
+For repeatable installed-app lifecycle checks, run `scripts/verify-native.ps1`. It builds a unique verification package, silently installs into an ignored repository-local directory, verifies its actual disposable data path, drives its WebView2 UI through loopback CDP and real Windows file dialogs through a bounded UIA/Win32 helper, then uninstalls that test package. No normal user profile is opened. The [verification log](docs/implementation/STAGE_3B_VERIFICATION.md) records the exact invocation for shells that disable `.ps1` files, plus results and limits. The harness covers populated legacy migration, keyboard entry/save, editing, focus/validation, evidence and acceptance, duplicate/stale settlement, correction without reminting, complete export/restore, rejection, backups, graceful restart and abrupt-stop recovery.
 
 The offline helper verifies an ordinary renderer request succeeds online and fails without reaching its owned loopback server while offline, then reloads the app and checks unchanged saved records. It leaves that WebView2 target offline for the native workflows and repeats the probe after each restart. A refused proxy is also set from process launch. OS and Rust-process networking are unchanged. Installers remain unsigned and require preinstalled WebView2. No signing, public release, or CI deployment was performed.
 
@@ -82,16 +86,16 @@ The offline helper verifies an ordinary renderer request succeeds online and fai
 
 The normal Windows build stores its SQLite database at `%APPDATA%\io.ascension.work\ascension.sqlite3`. Its `backups` subdirectory holds recovery files. Development and the normal installed build use this identifier unless an explicit isolated test configuration overrides it.
 
-Use **Export records** to save a portable JSON copy of committed records to a chosen location outside the application's data folder. Unsaved drafts are excluded. The export includes stable UUIDs, revisions, timestamps, relationships, and selected objective; it excludes local paths and workspace concurrency tokens. Use the export feature instead of copying an open SQLite database file, whose current data can also reside in its WAL sidecar.
+Use **Export records** to save a complete portable JSON copy of committed work and progress history outside the application's data folder. Unsaved drafts are excluded. Exports preserve UUIDs, revisions, selection, criterion history, evidence, snapshots, corrections, consumed reward slots, grants, ledger and exact command replay identities. They exclude application paths and the current workspace generation; historical commands retain their original concurrency input. Use the export feature instead of copying an open SQLite database file, whose current data can also reside in its WAL sidecar.
 
 **Import records** opens and validates a file, then displays local and incoming record counts. **Replace local records** is a separate confirmation: the incoming record set replaces the local set, including removal of records absent from the file. The app creates a synchronized `before-restore-<UUID>.json` backup first. If the backup or replacement fails, the existing workspace remains intact. Reimporting equivalent records is a no-op, preserving identities and revisions. Invalid JSON, duplicate identities, broken references, and unsupported schema versions are rejected before replacement.
 
-Restore backups are ordinary schema-version-1 JSON and can be selected through **Import records**. A database upgrade creates a separate verified `before-migration-<UUID>.sqlite3` snapshot; these SQLite recovery files are not JSON imports. Backups remain local and are not automatically pruned. Both exports and backups contain the entered work text.
+Restore backups are complete schema-version-2 JSON and can be selected through **Import records**. Legacy v1 imports create unaccepted draft criteria and are rejected when replacement would erase earned history. A database upgrade creates a separate verified `before-migration-<UUID>.sqlite3` snapshot; these SQLite recovery files are not JSON imports. Backups remain local and are not automatically pruned. Both exports and backups contain entered work/evidence text.
 
-Imports and saved workspaces are bounded to 10 MiB and 10,000 records; field limits are listed in the [contract](contracts/README.md). [Synthetic sample](contracts/fixtures/sample-v1.json) and [empty](contracts/fixtures/empty-v1.json) exports are included for development. Confirming the empty export intentionally replaces the workspace with an empty set after backing up changed local records.
+Imports and saved workspaces are bounded to 10 MiB and 10,000 records across work and progress; field limits are listed in the [contract](contracts/README.md). Legacy [synthetic sample](contracts/fixtures/sample-v1.json) and [empty](contracts/fixtures/empty-v1.json) fixtures remain for compatibility testing. Confirmed modern replacement can intentionally discard reward history, with a complete recovery backup; it is not a merge.
 
 ## Repository safety and contribution scope
 
-Follow [AGENTS.md](AGENTS.md). Use synthetic records in fixtures and diagnostics. Keep personal work, credentials, database files, runtime backups, installer output, and private exports out of Git. This repository includes no CI workflow or release automation; local build commands do not push or publish anything. Scope expansion beyond Stage 3a requires an explicit decision.
+Follow [AGENTS.md](AGENTS.md). Use synthetic records in fixtures and diagnostics. Keep personal work, credentials, database files, runtime backups, installer output, and private exports out of Git. This repository includes no CI workflow or release automation; local build commands do not push or publish anything. Scope expansion beyond Stage 3b requires separate owner authorization.
 
-Development stops at this Stage 3a boundary. Restore remains replacement-only, backups are retained without automatic pruning, and the Windows package assumes WebView2 is already installed. No Stage 3b/4 work is included or authorized by the completed checks.
+Development stops at Stage 3b. Restore remains replacement-only, backups are retained without automatic pruning, and the unsigned Windows package assumes WebView2 is already installed. No Stage 3c/4 work is authorized.

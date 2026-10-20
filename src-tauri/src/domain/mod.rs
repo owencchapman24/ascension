@@ -1,3 +1,4 @@
+use crate::progress::ProgressState;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -87,6 +88,7 @@ pub struct Workspace {
     pub objectives: Vec<Objective>,
     pub actions: Vec<NextAction>,
     pub notes: Vec<ResumptionNote>,
+    pub progress: ProgressState,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -101,6 +103,8 @@ pub struct RecordSet {
     pub objectives: Vec<Objective>,
     pub actions: Vec<NextAction>,
     pub notes: Vec<ResumptionNote>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<ProgressState>,
 }
 
 fn required_nullable<'de, D: serde::Deserializer<'de>>(
@@ -113,22 +117,32 @@ impl From<&Workspace> for RecordSet {
     fn from(workspace: &Workspace) -> Self {
         Self {
             format: "ascension-records".into(),
-            schema_version: 1,
+            schema_version: 2,
             selected_objective_id: workspace.selected_objective_id.clone(),
             projects: workspace.projects.clone(),
             objectives: workspace.objectives.clone(),
             actions: workspace.actions.clone(),
             notes: workspace.notes.clone(),
+            progress: Some(workspace.progress.clone()),
         }
     }
 }
 
 impl RecordSet {
+    pub fn upgrade_legacy(&mut self) {
+        if self.schema_version == 1 && self.progress.is_none() {
+            self.progress = Some(crate::progress::from_legacy(&self.objectives));
+            self.schema_version = 2;
+        }
+    }
     pub fn normalize(&mut self) {
         self.projects.sort_by(|a, b| a.id.cmp(&b.id));
         self.objectives.sort_by(|a, b| a.id.cmp(&b.id));
         self.actions.sort_by(|a, b| a.id.cmp(&b.id));
         self.notes.sort_by(|a, b| a.id.cmp(&b.id));
+        if let Some(progress) = &mut self.progress {
+            progress.normalize();
+        }
     }
     pub fn into_workspace(self, generation: String) -> Workspace {
         Workspace {
@@ -138,6 +152,7 @@ impl RecordSet {
             objectives: self.objectives,
             actions: self.actions,
             notes: self.notes,
+            progress: self.progress.unwrap_or_default(),
         }
     }
 }
@@ -191,6 +206,15 @@ pub struct RecordCounts {
     pub objectives: usize,
     pub actions: usize,
     pub notes: usize,
+    pub criteria: usize,
+    pub evidence: usize,
+    pub snapshots: usize,
+    pub acceptances: usize,
+    pub corrections: usize,
+    pub grants: usize,
+    pub ledger: usize,
+    pub commands: usize,
+    pub wallet_bc: u32,
 }
 impl From<&Workspace> for RecordCounts {
     fn from(workspace: &Workspace) -> Self {
@@ -199,6 +223,15 @@ impl From<&Workspace> for RecordCounts {
             objectives: workspace.objectives.len(),
             actions: workspace.actions.len(),
             notes: workspace.notes.len(),
+            criteria: workspace.progress.criteria.len(),
+            evidence: workspace.progress.evidence.len(),
+            snapshots: workspace.progress.snapshots.len(),
+            acceptances: workspace.progress.acceptances.len(),
+            corrections: workspace.progress.corrections.len(),
+            grants: workspace.progress.grants.len(),
+            ledger: workspace.progress.ledger.len(),
+            commands: workspace.progress.commands.len(),
+            wallet_bc: workspace.progress.wallet_bc,
         }
     }
 }
@@ -209,6 +242,8 @@ pub struct ImportPreview {
     pub file_name: String,
     pub current_counts: RecordCounts,
     pub incoming_counts: RecordCounts,
+    pub schema_version: u32,
+    pub warning: String,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct RestoreResult {
@@ -282,7 +317,7 @@ fn metadata(
 }
 
 pub(crate) fn validate_records(records: &RecordSet) -> Result<(), CommandError> {
-    if records.schema_version != 1 {
+    if ![1, 2].contains(&records.schema_version) {
         return Err(CommandError::new(
             "unsupported_schema",
             "This record schema version is not supported. Your saved workspace is unchanged.",
@@ -293,10 +328,21 @@ pub(crate) fn validate_records(records: &RecordSet) -> Result<(), CommandError> 
             "This is not an Ascension record set.",
         ));
     }
+    if (records.schema_version == 1 && records.progress.is_some())
+        || (records.schema_version == 2 && records.progress.is_none())
+    {
+        return Err(CommandError::invalid(
+            "The record schema and complete progress state do not match.",
+        ));
+    }
     if records.projects.len()
         + records.objectives.len()
         + records.actions.len()
         + records.notes.len()
+        + records
+            .progress
+            .as_ref()
+            .map_or(0, |state| state.record_count())
         > MAX_RECORDS
     {
         return Err(CommandError::invalid(
@@ -386,6 +432,27 @@ pub(crate) fn validate_records(records: &RecordSet) -> Result<(), CommandError> 
             "The selected objective does not exist.",
         ));
     }
+    if let Some(progress) = &records.progress {
+        macro_rules! distinct_progress_ids {
+            ($($field:ident),*) => { $(for record in &progress.$field {
+                if ids.contains(&record.id) { return Err(CommandError::invalid("Record IDs must be unique across work and progress records.")); }
+            })* };
+        }
+        distinct_progress_ids!(
+            slots,
+            criteria,
+            evidence,
+            validators,
+            snapshots,
+            acceptances,
+            corrections,
+            grants,
+            ledger,
+            audit,
+            commands
+        );
+        crate::progress::validate(progress, &records.objectives)?;
+    }
     if encoded_records(records)?.len() > MAX_IMPORT_BYTES {
         return Err(CommandError::invalid(
             "The saved record set must fit within the 10 MiB export limit.",
@@ -398,7 +465,7 @@ pub(crate) fn encoded_records(records: &RecordSet) -> Result<Vec<u8>, CommandErr
     serde_json::to_vec_pretty(records).map_err(|_| CommandError::storage())
 }
 
-pub(crate) fn parse_import(bytes: &[u8]) -> Result<RecordSet, CommandError> {
+pub(crate) fn parse_import(bytes: &[u8]) -> Result<(RecordSet, u32), CommandError> {
     if bytes.len() > MAX_IMPORT_BYTES {
         return Err(CommandError::new(
             "invalid_import",
@@ -418,6 +485,10 @@ pub(crate) fn parse_import(bytes: &[u8]) -> Result<RecordSet, CommandError> {
             CommandError::new("invalid_import", &error.message)
         }
     })?;
+    let source_schema = records.schema_version;
+    records.upgrade_legacy();
     records.normalize();
-    Ok(records)
+    validate_records(&records)
+        .map_err(|error| CommandError::new("invalid_import", &error.message))?;
+    Ok((records, source_schema))
 }

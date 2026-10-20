@@ -4,10 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import * as api from "../platform/client";
 import type { ImportPreview, Workspace } from "../platform/client";
+import { emptyProgress, progressWorkspace } from "../progress/__tests__/fixtures";
 
 vi.mock("../platform/client", async (importOriginal) => {
   const original = await importOriginal<typeof api>();
-  return { ...original, loadWorkspace: vi.fn(), createProject: vi.fn(), updateProject: vi.fn(), createObjective: vi.fn(), updateObjective: vi.fn(), selectObjective: vi.fn(), saveWork: vi.fn(), exportWorkspace: vi.fn(), previewImport: vi.fn(), restoreImport: vi.fn() };
+  return { ...original, loadWorkspace: vi.fn(), createProject: vi.fn(), updateProject: vi.fn(), createObjective: vi.fn(), updateObjective: vi.fn(), selectObjective: vi.fn(), saveWork: vi.fn(), exportWorkspace: vi.fn(), previewImport: vi.fn(), restoreImport: vi.fn(), saveCriterion: vi.fn(), lockCriterion: vi.fn(), recordEvidence: vi.fn(), reviewProgress: vi.fn(), acceptProgress: vi.fn(), correctAcceptance: vi.fn(), rejectReview: vi.fn() };
 });
 
 const projectId = "00000000-0000-4000-8000-000000000001";
@@ -21,8 +22,11 @@ const saved: Workspace = {
   objectives: [{ ...metadata, id: objectiveId, project_id: projectId, title: "Plan a small herb bed", criterion: "A diagram names three herbs and their positions." }, { ...metadata, id: secondId, project_id: projectId, title: "List supplies", criterion: "A list includes soil and containers." }],
   actions: [{ ...metadata, id: "00000000-0000-4000-8000-000000000003", objective_id: objectiveId, description: "Sketch the bed on paper", stop_condition: "Stop after marking three planting spots." }],
   notes: [{ ...metadata, id: "00000000-0000-4000-8000-000000000004", objective_id: objectiveId, text: "Compare the sunny corner next time." }],
+  progress: emptyProgress,
 };
-const incoming: ImportPreview = { token: "00000000-0000-4000-8000-000000000020", generation, file_name: "sample-records.json", current_counts: { projects: 1, objectives: 2, actions: 1, notes: 1 }, incoming_counts: { projects: 2, objectives: 3, actions: 2, notes: 0 } };
+const progressCounts = { criteria: 1, evidence: 2, snapshots: 1, acceptances: 1, corrections: 0, grants: 1, ledger: 1, commands: 1, wallet_bc: 4 };
+const incoming: ImportPreview = { token: "00000000-0000-4000-8000-000000000020", generation, file_name: "sample-records.json", schema_version: 2,
+  warning: "Complete replacement includes accepted progress and reward history.", current_counts: { projects: 1, objectives: 2, actions: 1, notes: 1, ...progressCounts }, incoming_counts: { projects: 2, objectives: 3, actions: 2, notes: 0, ...progressCounts, wallet_bc: 2 } };
 
 async function ready() { render(<App />); await screen.findByRole("heading", { name: "Work" }); }
 async function editAction(user: ReturnType<typeof userEvent.setup>) {
@@ -193,6 +197,9 @@ describe("Work", () => {
     const dialog = await screen.findByRole("dialog", { name: "Review import" });
     expect(within(dialog).getByText("sample-records.json")).toBeInTheDocument();
     expect(within(dialog).getByRole("row", { name: "Objectives 2 3" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("row", { name: "Acceptances 1 1" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("row", { name: "Build Credits 4 2" })).toBeInTheDocument();
+    expect(within(dialog).getByText(/Complete replacement includes accepted progress and reward history/)).toBeInTheDocument();
     expect(within(dialog).getByText(/replaces all local records/)).toBeInTheDocument();
     expect(api.restoreImport).not.toHaveBeenCalled();
     await user.click(within(dialog).getByRole("button", { name: "Cancel import" }));
@@ -385,5 +392,35 @@ describe("Work", () => {
     expect(input).toHaveValue(`${saved.actions[0].description} draft`);
     expect(screen.queryByText("Saved records exported to synthetic-records.json.")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: saved.actions[0].description })).toBeInTheDocument();
+  });
+
+  it("keeps saved work primary and directs locked criterion changes to versioned progress", async () => {
+    vi.mocked(api.loadWorkspace).mockResolvedValue(progressWorkspace);
+    const user = userEvent.setup({ delay: null }); await ready();
+    expect(screen.getByRole("heading", { name: "Sketch the bed on paper" }).compareDocumentPosition(screen.getByText("Progress and evidence"))).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(screen.queryByText(/Build Credits/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Edit objective" }));
+    expect(screen.queryByLabelText(/Criterion:/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Use Progress and evidence to prepare a new version/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Bounded objective")).toHaveValue(progressWorkspace.objectives[0].title);
+  });
+
+  it("guards progress drafts across selection and retains them after a failed reload", async () => {
+    vi.mocked(api.loadWorkspace).mockResolvedValue({ ...progressWorkspace, objectives: [...progressWorkspace.objectives, saved.objectives[1]] });
+    const user = userEvent.setup({ delay: null }); await ready();
+    await user.click(screen.getByText("Progress and evidence"));
+    await user.click(screen.getByRole("button", { name: "Record evidence" }));
+    await user.type(screen.getByLabelText("What happened or was observed?"), "Three positions were labeled.");
+    await user.selectOptions(screen.getByLabelText("Parent objective"), secondId);
+    expect(await screen.findByRole("dialog", { name: "Keep your unsaved draft?" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(api.selectObjective).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByLabelText("Evidence source")).toHaveFocus());
+    vi.mocked(api.loadWorkspace).mockRejectedValueOnce({ code: "storage_error", message: "Records could not be read." });
+    await user.click(screen.getByRole("button", { name: "Reload saved records" }));
+    await user.click(screen.getByRole("button", { name: "Discard draft and continue" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Records could not be read.");
+    expect(screen.getByLabelText("What happened or was observed?")).toHaveValue("Three positions were labeled.");
+    expect(screen.getByRole("heading", { name: "Sketch the bed on paper" })).toBeInTheDocument();
   });
 });
