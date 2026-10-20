@@ -10,9 +10,9 @@ This is a **public** repository for a Windows-first, local-first productivity ap
 - Do not access APIs, cloud accounts, external project directories, connectors, or files other than normal public dependency registries without explicit approval.
 - Do not add Actions workflows until tests exist and the workflow is deliberately reviewed for permissions, secrets, trigger scope, and artifact retention. Public runners still have concurrency, storage and security considerations.
 
-## Current goal — Stage 3b (owner authorized)
+## Current goal — Stage 3c (owner authorized)
 
-The owner's Stage 3b implementation assignment authorizes progress evidence, prospective criterion locking/versioning, local user acceptance, deterministic `bc-v1` issuance, corrections, and complete portability. Read `docs/specs/STAGE_3B.md` in addition to the Stage 3a baseline documents. Preserve Stage 3a behavior and data. Stage 3c/4 remain excluded. Work on `feat/stage-3b-evidence-ledger`; local verified commits are authorized, but pushing, merging, publishing, and releasing are not.
+The owner's Stage 3c assignment authorizes durable work opportunities, honest outcome/missingness tracking, E00/E01 infrastructure, one fixed presentation-only 64-unit H1 scene, and complete portability. Read `docs/specs/STAGE_3B.md` and `docs/specs/STAGE_3C.md` in addition to the Stage 3a baseline documents. Preserve Stage 3a/3b behavior, data, evidence authority, and `bc-v1` issuance invariants. Work on `feat/stage-3c-opportunities-h1`; local verified commits are authorized, but pushing, merging, publishing, and releasing are not. Do not activate a real E01 study on behalf of the owner; synthetic isolated tests may exercise the engine. Stage 4 remains excluded.
 
 The following Stage 3a workflow remains a regression requirement:
 
@@ -23,7 +23,7 @@ Build a minimal **packaged Windows app** in which a person can:
 4. Export and reimport an open, versioned record set while preserving stable IDs/versions.
 5. Reject malformed, corrupted, or unsupported-version imports without destroying valid local state.
 
-Do **not** add AI, API calls, a game, credit spending, experiment assignment, broad project-file scanning, cloud sync, accounts, telemetry, payments, autonomous actions, or Stages 3c/4. Evidence authority is bounded to registered sources; no external test runner or fabricated trusted validator. The app must remain useful with fictional progression hidden.
+Do **not** add AI, API calls, strategic gameplay, credit spending, broad project-file scanning, cloud sync, accounts, telemetry, payments, autonomous actions, notifications, surveillance, or Stage 4. Stage 3c permits only the explicitly scoped opportunity/study infrastructure and fixed H1 presentation. Evidence authority is bounded to registered sources; no external test runner or fabricated trusted validator. The app must remain useful with fictional progression hidden.
 
 ## Technical decisions
 
@@ -35,4 +35,4 @@ Do **not** add AI, API calls, a game, credit spending, experiment assignment, br
 
 ## Working method
 
-Inspect `git status` and the environment first. Report missing Node/npm, Rust MSVC, Windows C++ Build Tools or WebView2 before requesting changes. Use pinned compatible dependencies and commit lockfiles. Make small, tested, reviewable commits; record test commands and real results. If a framework/toolchain change is necessary, propose the smallest alternative and request approval before switching. Maintain an architectural decision record for any departure from these constraints. **Stop at Stage 3b and request approval before expanding scope.**
+Inspect `git status` and the environment first. Report missing Node/npm, Rust MSVC, Windows C++ Build Tools or WebView2 before requesting changes. Use pinned compatible dependencies and commit lockfiles. Make small, tested, reviewable commits; record test commands and real results. If a framework/toolchain change is necessary, propose the smallest alternative and request approval before switching. Maintain an architectural decision record for any departure from these constraints. **Stop at Stage 3c and request approval before expanding scope.**

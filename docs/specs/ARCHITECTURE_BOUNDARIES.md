@@ -1,5 +1,7 @@
 # Ascension architecture boundaries — Stage 3a
 
+Stage 3c authorization: after merged Stage 3b, the owner approved [STAGE_3C.md](STAGE_3C.md). Additive opportunity/study persistence and a fixed presentation-only H1 scene extend the historical exclusions below. Stage 3b alone still owns reward authority; no opportunity or scene operation can mint or spend. Stage 4 and real E01 activation by the implementation agent remain excluded. See ADR-0005.
+
 Stage 3b authorization: the owner approved the extension in [STAGE_3B.md](STAGE_3B.md) after PR #1 merged. The Stage 3a separation below remains the baseline. Stage 3b adds private Rust criterion/evidence/acceptance/issuance transactions and complete interchange v2; ordinary mutations must use targeted writes. Later game, AI, scanning, experiments, and spending remain excluded. The historical "do not implement" section below describes the original Stage 3a boundary, not a prohibition on the now-authorized Stage 3b subset.
 
 ## Initial implementation approach
