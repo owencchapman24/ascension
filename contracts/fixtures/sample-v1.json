@@ -1,0 +1,79 @@
+{
+  "format": "ascension-records",
+  "schema_version": 1,
+  "selected_objective_id": "44444444-4444-4444-8444-444444444444",
+  "projects": [
+    {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "revision": 3,
+      "created_at": "2026-01-01T09:00:00.000Z",
+      "updated_at": "2026-01-03T10:15:00.250Z",
+      "title": "Sample garden layout"
+    },
+    {
+      "id": "22222222-2222-4222-8222-222222222222",
+      "revision": 1,
+      "created_at": "2026-01-02T14:30:00.000Z",
+      "updated_at": "2026-01-02T14:30:00.000Z",
+      "title": "Sample workshop guide"
+    }
+  ],
+  "objectives": [
+    {
+      "id": "33333333-3333-4333-8333-333333333333",
+      "revision": 2,
+      "created_at": "2026-01-01T09:05:00.000Z",
+      "updated_at": "2026-01-03T10:20:00.500Z",
+      "project_id": "11111111-1111-4111-8111-111111111111",
+      "title": "Draft a layout for two example planting beds",
+      "criterion": "One sketch labels both beds and lists three sample plants for each bed."
+    },
+    {
+      "id": "44444444-4444-4444-8444-444444444444",
+      "revision": 4,
+      "created_at": "2026-01-02T14:35:00.000Z",
+      "updated_at": "2026-01-04T11:10:00.750Z",
+      "project_id": "22222222-2222-4222-8222-222222222222",
+      "title": "Write a one-page guide for a sample paper-model workshop",
+      "criterion": "The guide contains a materials list, three assembly steps, and an example finished model."
+    }
+  ],
+  "actions": [
+    {
+      "id": "55555555-5555-4555-8555-555555555555",
+      "revision": 5,
+      "created_at": "2026-01-01T09:10:00.000Z",
+      "updated_at": "2026-01-03T10:25:00.000Z",
+      "objective_id": "33333333-3333-4333-8333-333333333333",
+      "description": "Label the two beds on the example sketch.",
+      "stop_condition": "Both bed outlines have distinct labels and space for three plant names."
+    },
+    {
+      "id": "66666666-6666-4666-8666-666666666666",
+      "revision": 2,
+      "created_at": "2026-01-02T14:40:00.000Z",
+      "updated_at": "2026-01-04T11:15:00.125Z",
+      "objective_id": "44444444-4444-4444-8444-444444444444",
+      "description": "List the materials for one example paper model.",
+      "stop_condition": "The materials list gives a quantity for paper, tape, and a ruler."
+    }
+  ],
+  "notes": [
+    {
+      "id": "77777777-7777-4777-8777-777777777777",
+      "revision": 1,
+      "created_at": "2026-01-03T10:26:00.000Z",
+      "updated_at": "2026-01-03T10:26:00.000Z",
+      "objective_id": "33333333-3333-4333-8333-333333333333",
+      "text": "The sample sketch already has two empty rectangles. Continue with their labels."
+    },
+    {
+      "id": "88888888-8888-4888-8888-888888888888",
+      "revision": 3,
+      "created_at": "2026-01-02T14:45:00.000Z",
+      "updated_at": "2026-01-04T11:16:00.375Z",
+      "objective_id": "44444444-4444-4444-8444-444444444444",
+      "text": "The example model uses one sheet of paper. The tape quantity still needs an estimate."
+    }
+  ]
+}
