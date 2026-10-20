@@ -104,13 +104,15 @@ describe("River Reach voluntary strategy interface", () => {
   });
 
   it("explains reusable funded capacity and the exact additional cost of a saved blueprint", async () => {
-    const reused: WorldView = { ...fundedWorld, bank: { issued_bc: 12, spent_bc: 8, reserved_bc: 4, available_bc: 0 }, chapter: { ...fundedWorld.chapter!, funded_site_count: 2, queue: { ...queuedWorld.chapter!.queue!, building_type: "foundry", parcels: ["a2", "b2"] } } };
+    const reused: WorldView = { ...fundedWorld, bank: { issued_bc: 18, spent_bc: 8, reserved_bc: 4, available_bc: 6 }, chapter: { ...fundedWorld.chapter!, funded_site_count: 2, queue: { ...queuedWorld.chapter!.queue!, building_type: "foundry", parcels: ["a2", "b2"] } } };
     await open(reused);
     const queue = screen.getByRole("region", { name: "Foundry" });
     expect(within(queue).getByText("Total building capacity").nextElementSibling).toHaveTextContent("8 BC");
     expect(within(queue).getByText("Previously funded capacity usable").nextElementSibling).toHaveTextContent("1 site");
     expect(within(queue).getByText("Additional funded capacity needed").nextElementSibling).toHaveTextContent("1 site · 4 BC");
     expect(within(queue).getByText("Current affordability").nextElementSibling).toHaveTextContent("Fully funded");
+    expect(within(queue).getByText("Globally available BC").nextElementSibling).toHaveTextContent("6 BC");
+    expect(within(queue).getByText("Chapter spent BC").nextElementSibling).toHaveTextContent("8 BC");
     expect(within(queue).getByText("Placement status").nextElementSibling).toHaveTextContent("Legal saved blueprint");
     expect(screen.getByRole("button", { name: "Complete construction" })).toBeEnabled();
   });
