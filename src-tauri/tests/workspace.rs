@@ -588,6 +588,7 @@ fn backup_failure_and_transaction_failure_preserve_original_workspace() {
         fs::read(&fixture.backup_paths()[0]).unwrap(),
         expected_backup
     );
+    connection.execute_batch("CREATE TRIGGER reject_project_update BEFORE UPDATE ON projects BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END;").unwrap();
     assert_eq!(
         fixture
             .service
@@ -602,7 +603,7 @@ fn backup_failure_and_transaction_failure_preserve_original_workspace() {
     );
     assert_eq!(fixture.service.load_workspace().unwrap(), original);
     connection
-        .execute_batch("DROP TRIGGER reject_project_insert;")
+        .execute_batch("DROP TRIGGER reject_project_insert; DROP TRIGGER reject_project_update;")
         .unwrap();
     assert!(!fixture.restore(SAMPLE).unchanged);
 }
@@ -1142,7 +1143,7 @@ fn action_and_note_save_rolls_back_together_on_late_validation_or_sql_failure() 
             .workspace;
         let connection = Connection::open(&fixture.database).unwrap();
         if fail_in_sql {
-            connection.execute_batch("CREATE TRIGGER reject_note_insert BEFORE INSERT ON notes BEGIN SELECT RAISE(ABORT, 'synthetic late failure'); END;").unwrap();
+            connection.execute_batch("CREATE TRIGGER reject_note_update BEFORE UPDATE ON notes BEGIN SELECT RAISE(ABORT, 'synthetic late failure'); END;").unwrap();
         }
         let mut input = save_input(&original, Some("Changed synthetic note".into()));
         input.description = "Changed synthetic action".into();

@@ -1,5 +1,6 @@
 use crate::domain::*;
 use rusqlite::{Connection, MAIN_DB, OpenFlags, TransactionBehavior, params};
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
@@ -128,17 +129,18 @@ impl Repository {
             self.connection
                 .transaction_with_behavior(TransactionBehavior::Immediate),
         )?;
-        let mut workspace = read_workspace(&transaction)?;
-        if workspace.generation != expected_generation {
+        let before = read_workspace(&transaction)?;
+        if before.generation != expected_generation {
             return Err(CommandError::conflict());
         }
+        let mut workspace = before.clone();
         if change(&mut workspace)? {
             workspace.generation = new_id();
             let mut records = RecordSet::from(&workspace);
             records.normalize();
             validate_records(&records)?;
             workspace = records.into_workspace(workspace.generation);
-            write_workspace(&transaction, &workspace)?;
+            apply_workspace_changes(&transaction, &before, &workspace)?;
         }
         storage(transaction.commit())?;
         Ok(workspace)
@@ -169,7 +171,7 @@ impl Repository {
         // The write lock binds the backup to precisely the state this restore replaces.
         write_restore_backup(&current, backup_dir)?;
         let workspace = records.into_workspace(new_id());
-        write_workspace(&transaction, &workspace)?;
+        replace_workspace_for_restore(&transaction, &workspace)?;
         storage(transaction.commit())?;
         Ok(RestoreResult {
             workspace,
@@ -311,7 +313,133 @@ fn read_workspace(connection: &Connection) -> Result<Workspace, CommandError> {
     Ok(workspace)
 }
 
-fn write_workspace(connection: &Connection, workspace: &Workspace) -> Result<(), CommandError> {
+// Ordinary edits preserve rows so dependent records and their foreign keys survive.
+// The service owns transitions; this writer only persists the validated difference.
+fn apply_workspace_changes(
+    connection: &Connection,
+    before: &Workspace,
+    after: &Workspace,
+) -> Result<(), CommandError> {
+    let projects: HashMap<_, _> = before.projects.iter().map(|row| (&row.id, row)).collect();
+    let objectives: HashMap<_, _> = before.objectives.iter().map(|row| (&row.id, row)).collect();
+    let actions: HashMap<_, _> = before.actions.iter().map(|row| (&row.id, row)).collect();
+    let notes: HashMap<_, _> = before.notes.iter().map(|row| (&row.id, row)).collect();
+
+    // There are no ordinary project/objective/action deletion transitions. Fail
+    // closed if a future caller attempts one instead of silently dropping data.
+    if after
+        .projects
+        .iter()
+        .filter(|row| projects.contains_key(&row.id))
+        .count()
+        != projects.len()
+        || after
+            .objectives
+            .iter()
+            .filter(|row| objectives.contains_key(&row.id))
+            .count()
+            != objectives.len()
+        || after
+            .actions
+            .iter()
+            .filter(|row| actions.contains_key(&row.id))
+            .count()
+            != actions.len()
+    {
+        return Err(CommandError::invalid(
+            "Ordinary edits cannot remove projects, objectives, or actions.",
+        ));
+    }
+
+    for project in &after.projects {
+        match projects.get(&project.id) {
+            Some(previous) if *previous == project => {}
+            Some(_) => {
+                storage(connection.execute(
+                    "UPDATE projects SET title=?2,revision=?3,created_at=?4,updated_at=?5 WHERE id=?1",
+                    params![project.id, project.title, project.revision, project.created_at, project.updated_at],
+                ))?;
+            }
+            None => {
+                storage(connection.execute(
+                    "INSERT INTO projects(id,title,revision,created_at,updated_at) VALUES (?1,?2,?3,?4,?5)",
+                    params![project.id, project.title, project.revision, project.created_at, project.updated_at],
+                ))?;
+            }
+        }
+    }
+    for objective in &after.objectives {
+        match objectives.get(&objective.id) {
+            Some(previous) if *previous == objective => {}
+            Some(_) => {
+                storage(connection.execute(
+                    "UPDATE objectives SET project_id=?2,title=?3,criterion=?4,revision=?5,created_at=?6,updated_at=?7 WHERE id=?1",
+                    params![objective.id, objective.project_id, objective.title, objective.criterion, objective.revision, objective.created_at, objective.updated_at],
+                ))?;
+            }
+            None => {
+                storage(connection.execute(
+                    "INSERT INTO objectives(id,project_id,title,criterion,revision,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                    params![objective.id, objective.project_id, objective.title, objective.criterion, objective.revision, objective.created_at, objective.updated_at],
+                ))?;
+            }
+        }
+    }
+    for action in &after.actions {
+        match actions.get(&action.id) {
+            Some(previous) if *previous == action => {}
+            Some(_) => {
+                storage(connection.execute(
+                    "UPDATE actions SET objective_id=?2,description=?3,stop_condition=?4,revision=?5,created_at=?6,updated_at=?7 WHERE id=?1",
+                    params![action.id, action.objective_id, action.description, action.stop_condition, action.revision, action.created_at, action.updated_at],
+                ))?;
+            }
+            None => {
+                storage(connection.execute(
+                    "INSERT INTO actions(id,objective_id,description,stop_condition,revision,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                    params![action.id, action.objective_id, action.description, action.stop_condition, action.revision, action.created_at, action.updated_at],
+                ))?;
+            }
+        }
+    }
+    let remaining_notes: HashMap<_, _> = after.notes.iter().map(|row| (&row.id, row)).collect();
+    for note in &before.notes {
+        if !remaining_notes.contains_key(&note.id) {
+            // Clearing the optional note is the only ordinary record deletion.
+            storage(connection.execute("DELETE FROM notes WHERE id=?1", [&note.id]))?;
+        }
+    }
+    for note in &after.notes {
+        match notes.get(&note.id) {
+            Some(previous) if *previous == note => {}
+            Some(_) => {
+                storage(connection.execute(
+                    "UPDATE notes SET objective_id=?2,text=?3,revision=?4,created_at=?5,updated_at=?6 WHERE id=?1",
+                    params![note.id, note.objective_id, note.text, note.revision, note.created_at, note.updated_at],
+                ))?;
+            }
+            None => {
+                storage(connection.execute(
+                    "INSERT INTO notes(id,objective_id,text,revision,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6)",
+                    params![note.id, note.objective_id, note.text, note.revision, note.created_at, note.updated_at],
+                ))?;
+            }
+        }
+    }
+    // A selection-only change reaches just this statement; no record is touched.
+    storage(connection.execute(
+        "UPDATE workspace_state SET generation=?1,selected_objective_id=?2 WHERE singleton=1",
+        params![after.generation, after.selected_objective_id],
+    ))?;
+    Ok(())
+}
+
+// Explicit confirmed restore is the sole whole-workspace replacement path. Its
+// caller validates the import and creates a recovery backup before reaching here.
+fn replace_workspace_for_restore(
+    connection: &Connection,
+    workspace: &Workspace,
+) -> Result<(), CommandError> {
     storage(connection.execute_batch("UPDATE workspace_state SET selected_objective_id=NULL; DELETE FROM notes; DELETE FROM actions; DELETE FROM objectives; DELETE FROM projects;"))?;
     {
         let mut statement = storage(connection.prepare(
