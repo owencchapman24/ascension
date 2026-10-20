@@ -57,4 +57,22 @@ describe("desktop command boundary", () => {
     expect(client.normalizeError(failure)).toEqual(failure);
     expect(client.normalizeError("unexpected internal payload").message).not.toContain("unexpected internal payload");
   });
+
+  it("sends bounded progress inputs without supplying actor, grants, wallet or reward authority", async () => {
+    const identity = { expected_generation: "generation", parent_id: "parent", criterion_lineage_id: "lineage", criterion_version: 2 };
+    const criterion = { expected_generation: "generation", parent_id: "parent", criterion_lineage_id: "lineage", description: "Four labels", allocation_bc: 4,
+      evidence_policy: "user_attestation" as const, scope: "drawing", artifact_id: null, artifact_version: null, requires_independent_work: false, required_validators: [] };
+    await client.saveCriterion(criterion); expect(invoke).toHaveBeenLastCalledWith("save_criterion", { input: criterion });
+    await client.lockCriterion(identity); expect(invoke).toHaveBeenLastCalledWith("lock_criterion", { input: identity });
+    const evidence = { ...identity, kind: "user_attestation" as const, description: "I added four labels.", reference: null, observed_at: null, status: "supports" as const, assistance: "none" as const, uncertainty: null, supersedes: null };
+    await client.recordEvidence(evidence); expect(invoke).toHaveBeenLastCalledWith("record_evidence", { input: evidence });
+    const review = { ...identity, evidence_refs: ["evidence"], factual_summary: "The drawing is labeled.", assistance: "none" as const };
+    await client.reviewProgress(review); expect(invoke).toHaveBeenLastCalledWith("review_progress", { input: review });
+    const acceptance = { ...review, schema_version: 1 as const, command_id: "intent", expected_parent_revision: 3, reviewed_snapshot_id: "snapshot", reviewed_snapshot_digest: "digest" };
+    await client.acceptProgress(acceptance); expect(invoke).toHaveBeenLastCalledWith("accept_progress", { input: acceptance });
+    const correction = { expected_generation: "generation", acceptance_id: "acceptance", kind: "incorrect_acceptance" as const, reason: "One label was absent." };
+    await client.correctAcceptance(correction); expect(invoke).toHaveBeenLastCalledWith("correct_acceptance", { input: correction });
+    const rejection = { expected_generation: "generation", snapshot_id: "snapshot", reason: "Incomplete" };
+    await client.rejectReview(rejection); expect(invoke).toHaveBeenLastCalledWith("reject_review", { input: rejection });
+  });
 });

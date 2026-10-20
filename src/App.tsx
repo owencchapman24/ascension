@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import * as api from "./platform/client";
 import type { CommandError, ImportPreview, Objective, Project, Workspace } from "./platform/client";
+import ProgressPanel from "./progress/ProgressPanel";
 import "./App.css";
 
 type Editor =
@@ -17,7 +18,7 @@ function Modal({ title, children, onCancel }: { title: string; children: ReactNo
     ref.current?.querySelector<HTMLElement>("button")?.focus();
     return () => queueMicrotask(() => {
       const nextDialog = document.querySelector<HTMLElement>("[role=dialog]");
-      const editorInput = document.querySelector<HTMLElement>(".editor-panel input, .editor-panel textarea");
+      const editorInput = document.querySelector<HTMLElement>(".editor-panel input, .editor-panel textarea, .progress-editor input, .progress-editor textarea, .progress-editor select");
       if (nextDialog) {
         nextDialog.querySelector<HTMLElement>("button:not(:disabled)")?.focus();
       } else if (editorInput && !editorInput.matches(":disabled")) {
@@ -25,7 +26,7 @@ function Modal({ title, children, onCancel }: { title: string; children: ReactNo
       } else if (previous?.isConnected && !previous.matches(":disabled")) {
         previous.focus();
       } else {
-        (document.querySelector<HTMLElement>(".editor-panel input, .editor-panel textarea")
+        (document.querySelector<HTMLElement>(".editor-panel input, .editor-panel textarea, .progress-editor input, .progress-editor textarea, .progress-editor select")
           ?? document.getElementById("work-heading"))?.focus();
       }
     });
@@ -85,6 +86,8 @@ function App() {
   const [baseline, setBaseline] = useState("");
   const [guard, setGuard] = useState<Guard | null>(null);
   const [preview, setPreview] = useState<ImportPreview | null>(null);
+  const [progressDirty, setProgressDirty] = useState(false);
+  const [progressEpoch, setProgressEpoch] = useState(0);
   const editorRef = useRef<HTMLElement>(null);
   const errorNoticeRef = useRef<HTMLDivElement>(null);
   const previousEditorKey = useRef("");
@@ -120,18 +123,20 @@ function App() {
   }, [error, editor, preview]);
 
   async function perform(task: () => Promise<void>) {
-    if (lock.current) return;
+    if (lock.current) return false;
     lock.current = true; setBusy(true); setError(null); setNotice("");
-    try { await task(); } catch (cause: unknown) { setError(api.normalizeError(cause)); }
+    try { await task(); return true; } catch (cause: unknown) { setError(api.normalizeError(cause)); return false; }
     finally { lock.current = false; setBusy(false); }
   }
 
+  function resetProgressDraft() { setProgressEpoch((value) => value + 1); setProgressDirty(false); }
   function protectedAction(description: string, task: () => void, onKeep?: () => void) {
-    if (dirty) setGuard({ description, action: task, onKeep });
+    if (dirty || progressDirty) setGuard({ description, action: task, onKeep });
     else task();
   }
   function openEditor(next: Editor) {
     protectedAction("Opening another editor will discard this unsaved draft.", () => {
+      resetProgressDraft();
       setEditor(next); setBaseline(JSON.stringify(next)); setError(null); setValidationError(null); setNotice("");
     });
   }
@@ -148,13 +153,14 @@ function App() {
   }
   function reload() {
     protectedAction("Reloading saved records will discard this unsaved draft.", () => void perform(async () => {
-      const next = await api.loadWorkspace(); adopt(next); setEditor(null); setPreview(null); setNotice("Saved records reloaded.");
+      const next = await api.loadWorkspace(); adopt(next); resetProgressDraft(); setEditor(null); setPreview(null); setNotice("Saved records reloaded.");
     }));
   }
   function changeSelection(id: string | null, preferredProject?: string) {
     if (!workspace) return;
     protectedAction("Switching objectives will discard this unsaved draft.", () => void perform(async () => {
       adopt(await api.selectObjective({ expected_generation: workspace.generation, id }), preferredProject);
+      resetProgressDraft();
       setEditor(null);
     }));
   }
@@ -185,7 +191,7 @@ function App() {
     if (!preview) return;
     protectedAction("Replacing local records will discard this unsaved draft.", () => void perform(async () => {
       const result = await api.restoreImport({ token: preview.token, expected_generation: preview.generation });
-      adopt(result.workspace); setEditor(null); setPreview(null);
+      adopt(result.workspace); resetProgressDraft(); setEditor(null); setPreview(null);
       setNotice(result.unchanged ? "This export already matches your saved records. No changes were needed." : result.backup_created ? "Records restored. A backup of the previous local records was created on this device." : "Records restored on this device.");
     }), () => setPreview(null));
   }
@@ -290,6 +296,8 @@ function App() {
               </>
             )}
           </section>
+          {selected && !editor && <ProgressPanel key={`${selected.id}:${progressEpoch}`} workspace={workspace} objective={selected} busy={busy}
+            onDirtyChange={setProgressDirty} onMutation={(task, message) => perform(async () => { adopt(await task()); setNotice(message); })} />}
           {editor && (
             <section className="editor-panel" aria-labelledby="editor-heading" ref={editorRef}>
               <div className="section-heading">
@@ -307,9 +315,12 @@ function App() {
                   <>
                     <TextField id="objective-title" label="Bounded objective" value={editor.title} limit={500}
                       error={fieldError("objective-title")} onChange={(title) => updateEditor({ ...editor, title })} />
-                    <TextField id="criterion" label="Criterion: how will you recognize the outcome?"
+                    {workspace.progress.criteria.some((item) => item.parent_id === editor.id && item.state === "locked") ? <div className="field">
+                      <p className="detail-label">Criterion</p><p className="preserve-text">{editor.criterion}</p>
+                      <p className="muted">A criterion has been locked for this objective. Use Progress and evidence to prepare a new version; this editor only changes the objective title.</p>
+                    </div> : <TextField id="criterion" label="Criterion: how will you recognize the outcome?"
                       value={editor.criterion} limit={2000} multiline
-                      error={fieldError("criterion")} onChange={(criterion) => updateEditor({ ...editor, criterion })} />
+                      error={fieldError("criterion")} onChange={(criterion) => updateEditor({ ...editor, criterion })} />}
                   </>
                 )}
                 {editor.kind === "work" && (
@@ -359,13 +370,14 @@ function App() {
         <Modal title="Review import" onCancel={() => { if (!busy) setPreview(null); }}>
           <p>File: <strong>{preview.file_name}</strong></p>
           <p>This replaces all local records with the records in this file. Records missing from the file will be removed. A backup of changed local records is created before replacement.</p>
+          <p>Record schema {preview.schema_version}. {preview.warning}</p>
           <table>
             <caption>Record counts</caption>
             <thead><tr><th scope="col">Records</th><th scope="col">Local</th><th scope="col">Incoming</th></tr></thead>
             <tbody>
-              {(["projects", "objectives", "actions", "notes"] as const).map((key) => (
+              {(["projects", "objectives", "actions", "notes", "criteria", "evidence", "snapshots", "acceptances", "corrections", "grants", "ledger", "commands", "wallet_bc"] as const).map((key) => (
                 <tr key={key}>
-                  <th scope="row">{key[0].toUpperCase() + key.slice(1)}</th>
+                  <th scope="row">{key === "wallet_bc" ? "Build Credits" : key[0].toUpperCase() + key.slice(1)}</th>
                   <td>{preview.current_counts[key]}</td><td>{preview.incoming_counts[key]}</td>
                 </tr>
               ))}
