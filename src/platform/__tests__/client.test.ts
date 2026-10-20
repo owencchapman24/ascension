@@ -21,6 +21,22 @@ describe("desktop command boundary", () => {
     expect(invoke).toHaveBeenCalledWith("load_workspace");
   });
 
+  it("uses bounded world commands and previews without issuing reward authority", async () => {
+    await client.loadWorld(); expect(invoke).toHaveBeenLastCalledWith("load_world");
+    const preview = { chapter_id: "chapter", content_version: "river-reach-v1" as const, placements: [{ id: null, building_type: "foundry" as const, parcels: ["a1" as const, "b1" as const] }] };
+    await client.previewWorld(preview); expect(invoke).toHaveBeenLastCalledWith("preview_world", { input: preview });
+    const command = { command_id: "intent", schema_version: 1 as const, content_version: "river-reach-v1" as const, chapter_id: "chapter", expected_world_revision: 3, operation: { kind: "queue" as const, building_type: "foundry" as const, parcels: ["a1" as const, "b1" as const], reserve_available: true } };
+    await client.worldCommand(command); expect(invoke).toHaveBeenLastCalledWith("world_command", { input: command });
+    expect(command.operation).not.toHaveProperty("cost_bc"); expect(command.operation).not.toHaveProperty("grant_id"); expect(command.operation).not.toHaveProperty("capabilities");
+  });
+
+  it("does not expose the world economy in a browser-only connection", async () => {
+    vi.mocked(isTauri).mockReturnValue(false);
+    await expect(client.loadWorld()).rejects.toThrow("native desktop connection");
+    await expect(client.worldCommand({ command_id: "intent", schema_version: 1, content_version: "river-reach-v1", chapter_id: null, expected_world_revision: 0, operation: { kind: "initialize" } })).rejects.toThrow("native desktop connection");
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it("serializes create and update input with exact snake_case names", async () => {
     await client.createProject({ expected_generation: "generation", title: "Sample" });
     expect(invoke).toHaveBeenLastCalledWith("create_project", { input: { expected_generation: "generation", title: "Sample" } });

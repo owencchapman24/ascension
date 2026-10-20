@@ -6,11 +6,12 @@ import * as api from "../platform/client";
 import type { ImportPreview, Workspace } from "../platform/client";
 import { emptyProgress, progressWorkspace } from "../progress/__tests__/fixtures";
 import { emptyStudy } from "../study/emptyStudy";
-import { epoch as studyEpoch } from "../study/__tests__/fixtures";
+import { epoch as studyEpoch, manifest as studyManifest } from "../study/__tests__/fixtures";
+import { fundedWorld, queuedWorld, validPreview, world } from "../world/__tests__/fixtures";
 
 vi.mock("../platform/client", async (importOriginal) => {
   const original = await importOriginal<typeof api>();
-  return { ...original, loadWorkspace: vi.fn(), createProject: vi.fn(), updateProject: vi.fn(), createObjective: vi.fn(), updateObjective: vi.fn(), selectObjective: vi.fn(), saveWork: vi.fn(), exportWorkspace: vi.fn(), previewImport: vi.fn(), restoreImport: vi.fn(), saveCriterion: vi.fn(), lockCriterion: vi.fn(), recordEvidence: vi.fn(), reviewProgress: vi.fn(), acceptProgress: vi.fn(), correctAcceptance: vi.fn(), rejectReview: vi.fn() };
+  return { ...original, loadWorkspace: vi.fn(), loadWorld: vi.fn(), previewWorld: vi.fn(), worldCommand: vi.fn(), createProject: vi.fn(), updateProject: vi.fn(), createObjective: vi.fn(), updateObjective: vi.fn(), selectObjective: vi.fn(), saveWork: vi.fn(), exportWorkspace: vi.fn(), previewImport: vi.fn(), restoreImport: vi.fn(), saveCriterion: vi.fn(), lockCriterion: vi.fn(), recordEvidence: vi.fn(), reviewProgress: vi.fn(), acceptProgress: vi.fn(), correctAcceptance: vi.fn(), rejectReview: vi.fn() };
 });
 
 const projectId = "00000000-0000-4000-8000-000000000001";
@@ -19,6 +20,7 @@ const secondId = "00000000-0000-4000-8000-000000000005";
 const generation = "00000000-0000-4000-8000-000000000010";
 const metadata = { revision: 1, created_at: "2026-10-16T12:00:00.000Z", updated_at: "2026-10-16T12:00:00.000Z" };
 const saved: Workspace = {
+  world: { chapter: null, spending: [], commands: [] },
   study: emptyStudy,
   generation, selected_objective_id: objectiveId,
   projects: [{ ...metadata, id: projectId, title: "Sample garden" }],
@@ -27,7 +29,7 @@ const saved: Workspace = {
   notes: [{ ...metadata, id: "00000000-0000-4000-8000-000000000004", objective_id: objectiveId, text: "Compare the sunny corner next time." }],
   progress: emptyProgress,
 };
-const progressCounts = { criteria: 1, evidence: 2, snapshots: 1, acceptances: 1, corrections: 0, grants: 1, ledger: 1, commands: 1, wallet_bc: 4, opportunities: 0, assignments: 0, outcome_events: 0, study_manifests: 0, schedule_epochs: 0, exposures: 0, burdens: 0, reflections: 0 };
+const progressCounts = { criteria: 1, evidence: 2, snapshots: 1, acceptances: 1, corrections: 0, grants: 1, ledger: 1, commands: 1, wallet_bc: 4, opportunities: 0, assignments: 0, outcome_events: 0, study_manifests: 0, schedule_epochs: 0, exposures: 0, burdens: 0, reflections: 0, world_commands: 0, world_spends: 0, world_buildings: 0, world_reserved_bc: 0, world_spent_bc: 0, world_funded_sites: 0, world_endings: 0 };
 const incoming: ImportPreview = { token: "00000000-0000-4000-8000-000000000020", generation, file_name: "sample-records.json", schema_version: 2,
   warning: "Complete replacement includes accepted progress and reward history.", current_counts: { projects: 1, objectives: 2, actions: 1, notes: 1, ...progressCounts }, incoming_counts: { projects: 2, objectives: 3, actions: 2, notes: 0, ...progressCounts, wallet_bc: 2 } };
 
@@ -40,6 +42,59 @@ async function editAction(user: ReturnType<typeof userEvent.setup>) {
 describe("Work", () => {
   beforeEach(() => { vi.resetAllMocks(); vi.mocked(api.loadWorkspace).mockResolvedValue(structuredClone(saved)); });
   afterEach(cleanup);
+
+  it("keeps World unloaded on startup and preserves a Work draft across voluntary navigation", async () => {
+    vi.mocked(api.loadWorld).mockResolvedValue({ ...world, chapter: null });
+    const user = userEvent.setup(); await ready(); expect(api.loadWorld).not.toHaveBeenCalled();
+    const input = await editAction(user); await user.type(input, " keep my draft");
+    await user.click(screen.getByRole("button", { name: "World" }));
+    await screen.findByRole("button", { name: "Enter River Reach" }); expect(api.worldCommand).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Work" }));
+    expect(input).toBeVisible(); expect(input).toHaveValue(`${saved.actions[0].description} keep my draft`); expect(api.saveWork).not.toHaveBeenCalled();
+  });
+
+  it.each(["e00", "e01"] as const)("withholds strategic content throughout active %s and exposes explicit study lifecycle controls", async phase => {
+    vi.mocked(api.loadWorkspace).mockResolvedValue({ ...saved, study: { ...emptyStudy, epochs: [studyEpoch], manifests: [{ ...studyManifest, phase }] } });
+    const user = userEvent.setup(); await ready(); await user.click(screen.getByRole("button", { name: "World" }));
+    expect(screen.getByRole("heading", { name: `Strategic World is withheld during ${phase.toUpperCase()}` })).toBeVisible();
+    expect(api.loadWorld).not.toHaveBeenCalled(); expect(screen.queryByRole("button", { name: "Enter River Reach" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Return to study settings" }));
+    expect(screen.getByText("Schedules and optional studies").closest("details")).toHaveAttribute("open");
+    expect(screen.getByRole("button", { name: `Review ${phase.toUpperCase()} lifecycle` })).toBeVisible();
+  });
+
+  it("prevents view navigation from bypassing construction confirmation", async () => {
+    vi.mocked(api.loadWorld).mockResolvedValue(queuedWorld); vi.mocked(api.previewWorld).mockResolvedValue(validPreview);
+    const user = userEvent.setup(); await ready(); await user.click(screen.getByRole("button", { name: "World" }));
+    await user.click(await screen.findByRole("button", { name: "Complete construction" }));
+    expect(screen.getByRole("button", { name: "Work" })).toBeDisabled(); expect(screen.getByRole("button", { name: "Chronicle" })).toBeDisabled();
+    await user.keyboard("{Escape}"); expect(screen.getByRole("button", { name: "Work" })).toBeEnabled(); expect(api.worldCommand).not.toHaveBeenCalled();
+  });
+
+  it("retains a layout draft through Work editing and saving while omitting the hidden province scene", async () => {
+    vi.mocked(api.loadWorld).mockResolvedValue(fundedWorld); vi.mocked(api.previewWorld).mockResolvedValue(validPreview);
+    vi.mocked(api.saveWork).mockResolvedValue({ ...saved, generation: "00000000-0000-4000-8000-000000000222" });
+    const user = userEvent.setup(); await ready(); await user.click(screen.getByRole("button", { name: "World" }));
+    await user.click(await screen.findByRole("button", { name: "Reconfigure" })); await user.click(screen.getByRole("button", { name: "Remove Survey Lodge 1" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save free layout" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Work" })); expect(document.querySelector(".rr-map")).toBeNull();
+    const input = await editAction(user); expect(screen.queryByRole("dialog")).not.toBeInTheDocument(); await user.type(input, " edited while layout rests");
+    await user.click(screen.getByRole("button", { name: "Save next action and note" })); await user.click(screen.getByRole("button", { name: "World" }));
+    expect(await screen.findByRole("heading", { name: "Layout preview" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Remove Survey Lodge 1" })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save free layout" })).toBeEnabled()); expect(api.worldCommand).not.toHaveBeenCalled();
+    expect(api.loadWorld).toHaveBeenCalledTimes(2);
+  });
+
+  it("guards a world layout draft before consequential restore or reload", async () => {
+    vi.mocked(api.loadWorld).mockResolvedValue(fundedWorld); vi.mocked(api.previewWorld).mockResolvedValue(validPreview); vi.mocked(api.previewImport).mockResolvedValue(incoming);
+    const user = userEvent.setup(); await ready(); await user.click(screen.getByRole("button", { name: "World" }));
+    await user.click(await screen.findByRole("button", { name: "Reconfigure" })); await user.click(screen.getByRole("button", { name: "Remove Survey Lodge 1" }));
+    await user.click(screen.getByRole("button", { name: "Reload saved records" })); expect(screen.getByRole("dialog", { name: "Keep your unsaved draft?" })).toBeVisible(); await user.click(screen.getByRole("button", { name: "Keep editing" }));
+    await user.click(screen.getByRole("button", { name: "Import records" })); await user.click(await screen.findByRole("button", { name: "Replace local records" }));
+    expect(screen.getByRole("dialog", { name: "Keep your unsaved draft?" })).toBeVisible(); expect(api.restoreImport).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Keep editing" })); expect(screen.getByRole("heading", { name: "Layout preview" })).toBeVisible();
+  });
 
   it("immediately presents the saved objective, action, stop and note on launch", async () => {
     await ready();
@@ -319,7 +374,8 @@ describe("Work", () => {
     vi.mocked(api.createObjective).mockResolvedValue(withObjective);
     vi.mocked(api.saveWork).mockResolvedValue(withWork);
     const user = userEvent.setup({ delay: null }); await ready();
-    await user.tab(); expect(screen.getByRole("button", { name: "New project" })).toHaveFocus();
+    for (let index = 0; index < 4; index += 1) await user.tab();
+    expect(screen.getByRole("button", { name: "New project" })).toHaveFocus();
     await user.keyboard("{Enter}"); expect(screen.getByLabelText("Project name")).toHaveFocus();
     await user.keyboard(`${saved.projects[0].title}{Enter}`);
     await screen.findByText("Project saved on this device.");
