@@ -2,7 +2,7 @@
 
 Ascension is a Windows-first, local-first workspace for resuming a concrete next action. [Stage 3b](docs/specs/STAGE_3B.md) adds prospective criteria, evidence, local acceptance, corrections, and fictional Build Credits. [Stage 3c](docs/specs/STAGE_3C.md) adds optional work opportunities, personal-study infrastructure, and a fixed restoration scene. [Stage 4](docs/specs/STAGE_4.md) adds River Reach, one optional strategy chapter of The Beacon Commonwealth. It requires no AI, account, or network service.
 
-Stages 3a, 3b, and 3c were merged in PRs #1–3. Current implementation evidence and outstanding gates are in the [Stage 4 verification log](docs/implementation/STAGE_4_VERIFICATION.md). Historical [Stage 3c](docs/implementation/STAGE_3C_VERIFICATION.md), [Stage 3b](docs/implementation/STAGE_3B_VERIFICATION.md), and [Stage 3a](docs/implementation/STAGE_3A_VERIFICATION.md#verification-closure--2026-10-19) results remain separate.
+Stages 3a, 3b, and 3c were merged in PRs #1–3. Stage 4 engineering verification passed locally; its evidence, review readiness, and limitations are in the [Stage 4 verification log](docs/implementation/STAGE_4_VERIFICATION.md). Historical [Stage 3c](docs/implementation/STAGE_3C_VERIFICATION.md), [Stage 3b](docs/implementation/STAGE_3B_VERIFICATION.md), and [Stage 3a](docs/implementation/STAGE_3A_VERIFICATION.md#verification-closure--2026-10-19) results remain separate.
 
 The Work view keeps the next action and resumption note primary. Progress review, opportunity tracking, and World are optional. No timer, task click, or game action demonstrates accomplishment. There is no external verification runner, cloud sync, telemetry, payment, or automatic ingestion.
 
