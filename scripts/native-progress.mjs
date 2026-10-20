@@ -91,7 +91,7 @@ export async function verifyProgress(h) {
   const full=await exportFile('stage3b-complete.json');
   assert.deepEqual(full,recordSet(reaccepted));
   const legacyPath=path.join(root,'unsafe-legacy.json');
-  const {progress:_progress,...legacyWork}=full;
+  const {progress:_progress,study:_study,...legacyWork}=full;
   await writeFile(legacyPath,JSON.stringify({...legacyWork,schema_version:1}));
   await clickButton('Import records'); nativeDialog('Preview an Ascension export','Select',legacyPath);
   await until(()=>evaluate("Array.from(document.querySelectorAll('[role=alert]')).some(e=>e.textContent.includes('cannot replace earned reward history'))"),'unsafe legacy import rejected');
@@ -105,7 +105,7 @@ export async function verifyProgress(h) {
   await restoreFile(path.join(root,'stage3b-complete.json'),restored,full);
   assert.deepEqual(await workspace(),restored);
   assert.deepEqual(await exportFile('stage3b-restored.json'),full);
-  checks.push('Native complete v2 export, explicitly confirmed replacement, restore into empty state and replay preserve exact criteria/evidence/corrections/grants/ledger/command identities');
+  checks.push('Native complete modern export, explicitly confirmed replacement, restore into empty state and replay preserve exact criteria/evidence/corrections/grants/ledger/command identities');
   await closeApplication(); await launch();
   assert.deepEqual(await workspace(),restored);
   assert.ok(await evaluate("document.querySelector('.saved-action')?.textContent.includes('Write the first example step.')"));
