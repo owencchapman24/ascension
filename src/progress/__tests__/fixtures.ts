@@ -1,4 +1,5 @@
 import type { Criterion, Evidence, ProgressState, ReviewSnapshot, Workspace } from "../../platform/client";
+import { emptyStudy } from "../../study/emptyStudy";
 
 export const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
 export const timestamp = "2026-10-19T12:00:00.000Z";
@@ -23,6 +24,7 @@ export const snapshot: ReviewSnapshot = {
 };
 const metadata = { revision: 1, created_at: timestamp, updated_at: timestamp };
 export const progressWorkspace: Workspace = {
+  study: emptyStudy,
   generation: id(99), selected_objective_id: id(2), projects: [{ ...metadata, id: id(1), title: "Sample garden" }],
   objectives: [{ ...metadata, id: id(2), project_id: id(1), title: "Plan a small herb bed", criterion: criterion.description }],
   actions: [{ ...metadata, id: id(3), objective_id: id(2), description: "Sketch the bed on paper", stop_condition: "Stop after marking three positions." }], notes: [],

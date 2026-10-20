@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "rea
 import * as api from "./platform/client";
 import type { CommandError, ImportPreview, Objective, Project, Workspace } from "./platform/client";
 import ProgressPanel from "./progress/ProgressPanel";
+import StudyPanel from "./study/StudyPanel";
+import WorldPanel from "./study/WorldPanel";
 import "./App.css";
 
 type Editor =
@@ -18,7 +20,7 @@ function Modal({ title, children, onCancel }: { title: string; children: ReactNo
     ref.current?.querySelector<HTMLElement>("button")?.focus();
     return () => queueMicrotask(() => {
       const nextDialog = document.querySelector<HTMLElement>("[role=dialog]");
-      const editorInput = document.querySelector<HTMLElement>(".editor-panel input, .editor-panel textarea, .progress-editor input, .progress-editor textarea, .progress-editor select");
+      const editorInput = Array.from(document.querySelectorAll<HTMLElement>(".editor-panel input, .editor-panel textarea, .progress-editor input, .progress-editor textarea, .progress-editor select, .study-editor[data-active-draft=true] input, .study-editor[data-active-draft=true] textarea, .study-editor[data-active-draft=true] select")).find((element) => !element.closest("[hidden], details:not([open])"));
       if (nextDialog) {
         nextDialog.querySelector<HTMLElement>("button:not(:disabled)")?.focus();
       } else if (editorInput && !editorInput.matches(":disabled")) {
@@ -87,6 +89,7 @@ function App() {
   const [guard, setGuard] = useState<Guard | null>(null);
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [progressDirty, setProgressDirty] = useState(false);
+  const [studyDirty, setStudyDirty] = useState(false);
   const [progressEpoch, setProgressEpoch] = useState(0);
   const editorRef = useRef<HTMLElement>(null);
   const errorNoticeRef = useRef<HTMLDivElement>(null);
@@ -111,6 +114,23 @@ function App() {
     return () => { active = false; };
   }, []);
   useEffect(() => {
+    if (!workspace?.study.opportunities.length) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const boundaries = workspace.study.opportunities.flatMap((item) => [Date.parse(item.cue_at) - 60_000, Date.parse(item.cue_at), Date.parse(item.cue_at) + item.window_seconds * 1000]);
+    const next = boundaries.filter((time) => time > Date.now()).sort((a, b) => a - b)[0];
+    const refresh = () => {
+      if (document.visibilityState === "hidden") return;
+      if (lock.current) { timer = window.setTimeout(refresh, 250); return; }
+      void api.loadWorkspace().then((value) => { if (!cancelled) adopt(value); }).catch((cause: unknown) => { if (!cancelled) setError(api.normalizeError(cause)); });
+    };
+    timer = next ? window.setTimeout(refresh, Math.min(next - Date.now() + 100, 2_147_483_647)) : undefined;
+    const visible = () => { if (document.visibilityState === "visible") refresh(); };
+    document.addEventListener("visibilitychange", visible);
+    window.addEventListener("focus", refresh);
+    return () => { cancelled = true; if (timer) window.clearTimeout(timer); document.removeEventListener("visibilitychange", visible); window.removeEventListener("focus", refresh); };
+  }, [workspace]);
+  useEffect(() => {
     if (editorKey) editorRef.current?.querySelector<HTMLElement>("input, textarea")?.focus();
     else if (previousEditorKey.current) document.getElementById("work-heading")?.focus();
     previousEditorKey.current = editorKey;
@@ -129,9 +149,9 @@ function App() {
     finally { lock.current = false; setBusy(false); }
   }
 
-  function resetProgressDraft() { setProgressEpoch((value) => value + 1); setProgressDirty(false); }
+  function resetProgressDraft() { setProgressEpoch((value) => value + 1); setProgressDirty(false); setStudyDirty(false); }
   function protectedAction(description: string, task: () => void, onKeep?: () => void) {
-    if (dirty || progressDirty) setGuard({ description, action: task, onKeep });
+    if (dirty || progressDirty || studyDirty) setGuard({ description, action: task, onKeep });
     else task();
   }
   function openEditor(next: Editor) {
@@ -296,8 +316,11 @@ function App() {
               </>
             )}
           </section>
-          {selected && !editor && <ProgressPanel key={`${selected.id}:${progressEpoch}`} workspace={workspace} objective={selected} busy={busy}
-            onDirtyChange={setProgressDirty} onMutation={(task, message) => perform(async () => { adopt(await task()); setNotice(message); })} />}
+          {selected && !editor && <fieldset className="optional-controls" disabled={studyDirty}><legend className="visually-hidden">Progress and evidence controls</legend><ProgressPanel key={`${selected.id}:${progressEpoch}`} workspace={workspace} objective={selected} busy={busy}
+            onDirtyChange={setProgressDirty} onMutation={(task, message) => perform(async () => { adopt(await task()); setNotice(message); })} /></fieldset>}
+          {!editor && <fieldset className="optional-controls" disabled={progressDirty}><legend className="visually-hidden">Opportunity controls</legend><StudyPanel key={`study:${selected?.id ?? "none"}:${progressEpoch}`} workspace={workspace} objective={selected} busy={busy}
+            onDirtyChange={setStudyDirty} onMutation={(task, message) => perform(async () => { adopt(await task()); setNotice(message); })} /></fieldset>}
+          {!editor && <WorldPanel workspace={workspace} busy={busy} onMutation={(task, message) => perform(async () => { adopt(await task()); setNotice(message); })} />}
           {editor && (
             <section className="editor-panel" aria-labelledby="editor-heading" ref={editorRef}>
               <div className="section-heading">
@@ -375,9 +398,9 @@ function App() {
             <caption>Record counts</caption>
             <thead><tr><th scope="col">Records</th><th scope="col">Local</th><th scope="col">Incoming</th></tr></thead>
             <tbody>
-              {(["projects", "objectives", "actions", "notes", "criteria", "evidence", "snapshots", "acceptances", "corrections", "grants", "ledger", "commands", "wallet_bc"] as const).map((key) => (
+              {(["projects", "objectives", "actions", "notes", "criteria", "evidence", "snapshots", "acceptances", "corrections", "grants", "ledger", "commands", "wallet_bc", "schedule_epochs", "study_manifests", "opportunities", "assignments", "outcome_events", "exposures", "burdens", "reflections"] as const).map((key) => (
                 <tr key={key}>
-                  <th scope="row">{key === "wallet_bc" ? "Build Credits" : key[0].toUpperCase() + key.slice(1)}</th>
+                  <th scope="row">{key === "wallet_bc" ? "Build Credits" : (key[0].toUpperCase() + key.slice(1)).replace(/_/g, " ")}</th>
                   <td>{preview.current_counts[key]}</td><td>{preview.incoming_counts[key]}</td>
                 </tr>
               ))}

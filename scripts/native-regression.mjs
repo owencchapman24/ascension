@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { verifyOffline } from './native-offline.mjs';
 import { verifyProgress } from './native-progress.mjs';
+import { verifyStudy } from './native-study.mjs';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const root = path.resolve(process.argv[2] ?? '');
@@ -23,6 +24,7 @@ const executable = path.join(root, 'installed', 'ascension.exe');
 const checks = [];
 const dialogs = [];
 const offline = [];
+const startup = [];
 let application;
 let client;
 
@@ -78,7 +80,7 @@ async function connect(url) {
 
 async function evaluate(expression) {
   const response = await client.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-  if (response.exceptionDetails) throw new Error(response.exceptionDetails.text);
+  if (response.exceptionDetails) throw new Error(response.exceptionDetails.exception?.description ?? response.exceptionDetails.text);
   return response.result.value;
 }
 const js = JSON.stringify;
@@ -96,12 +98,23 @@ function nativeDialog(title, action = 'Inspect', selectedPath = '') {
   if (action !== 'Inspect') dialogs.push(JSON.parse(output));
   return output;
 }
-const recordSet = value => ({ format: 'ascension-records', schema_version: 2,
+function portableStudy(value) {
+  const study = structuredClone(value);
+  delete study.presentation;
+  for (const manifest of study.manifests) delete manifest.status;
+  for (const opportunity of study.opportunities) delete opportunity.outcome_state;
+  // This helper is used before randomized studies. Frozen hidden allocations
+  // must be compared through complete native exports, not reconstructed from UI.
+  assert.equal(study.manifests.length, 0, 'Use complete exports for study-history comparisons');
+  return study;
+}
+const recordSet = value => ({ format: 'ascension-records', schema_version: 3,
   selected_objective_id: value.selected_objective_id,
   ...Object.fromEntries(['projects', 'objectives', 'actions', 'notes'].map(key => [key, [...value[key]].sort((a, b) => a.id.localeCompare(b.id))])),
-  progress: value.progress });
+  progress: value.progress, study: portableStudy(value.study) });
 const counts = value => [...['projects', 'objectives', 'actions', 'notes'].map(key => value[key].length),
-  ...['criteria', 'evidence', 'snapshots', 'acceptances', 'corrections', 'grants', 'ledger', 'commands'].map(key => value.progress[key].length), value.progress.wallet_bc];
+  ...['criteria', 'evidence', 'snapshots', 'acceptances', 'corrections', 'grants', 'ledger', 'commands'].map(key => value.progress[key].length), value.progress.wallet_bc,
+  ...['epochs','manifests','opportunities','assignments','outcomes','exposures','burdens','reflections'].map(key=>value.study[key].length)];
 const emptyProgress = () => ({registry_revision:0,parents:[],slots:[],criteria:[],evidence:[],validators:[],snapshots:[],acceptances:[],corrections:[],grants:[],ledger:[],audit:[],commands:[],wallet_bc:0});
 const backupsRoot = path.join(root, 'profile', 'backups');
 async function backups() {
@@ -109,6 +122,16 @@ async function backups() {
   catch (error) { if (error.code === 'ENOENT') return []; throw error; }
 }
 const ready = () => until(() => evaluate("Array.from(document.querySelectorAll('button')).some(e => e.textContent === 'Import records' && !e.matches(':disabled'))"), 'file command completed');
+function durableView(value) {
+  const copy=structuredClone(value);
+  delete copy.study.presentation;
+  for(const item of copy.study.opportunities) delete item.outcome_state;
+  for(const item of copy.study.manifests) delete item.status;
+  // Actual conditions are verified through complete exports. IPC redaction can
+  // change at a clock boundary without a database write during an open dialog.
+  for(const item of copy.study.assignments) delete item.condition;
+  return copy;
+}
 async function exportFile(name) {
   const target = path.join(root, name);
   await clickButton('Export records');
@@ -120,7 +143,7 @@ async function previewFile(target, current, incoming) {
   await clickButton('Import records');
   nativeDialog('Preview an Ascension export', 'Select', target);
   await until(() => evaluate("document.querySelector('[role=dialog]')?.getAttribute('aria-label') === 'Review import'"), 'native import preview');
-  assert.deepEqual(await workspace(), current, 'Preview cannot change saved state or generation');
+  assert.deepEqual(durableView(await workspace()), durableView(current), 'Preview cannot change saved state or generation');
   const rows = await evaluate("Array.from(document.querySelectorAll('[role=dialog] tbody tr')).map(row => Array.from(row.querySelectorAll('td')).map(cell => Number(cell.textContent)))");
   assert.deepEqual(rows, counts(current).map((count, index) => [count, counts(incoming)[index]]));
   assert.ok(await evaluate("document.querySelector('[role=dialog]').textContent.includes('Records missing from the file will be removed.')"));
@@ -165,6 +188,7 @@ async function closeApplication() {
   client?.close();
 }
 async function launch() {
+  const launchedAt = performance.now();
   const port = await freePort();
   const environment = Object.fromEntries(Object.entries(process.env)
     .filter(([name]) => !name.toUpperCase().startsWith('WEBVIEW2_')));
@@ -181,6 +205,7 @@ async function launch() {
   }, 'installed app WebView2', 45000);
   client = await connect(page.webSocketDebuggerUrl);
   await until(() => evaluate("document.querySelector('#work-heading')?.textContent === 'Work'"), 'Rust-backed Work view');
+  startup.push({installed_process_to_work_ms:Number((performance.now()-launchedAt).toFixed(2))});
   assert.equal(await evaluate("window.__TAURI_INTERNALS__.invoke('plugin:app|identifier')"), config.identifier);
   const actualDataPath = await evaluate("window.__TAURI_INTERNALS__.invoke('plugin:path|resolve_directory', {directory:14})");
   assert.equal(path.resolve(actualDataPath).toLowerCase(), path.join(root, 'profile').toLowerCase(), 'Actual native app-data path must be isolated');
@@ -451,8 +476,10 @@ try {
   checks.push('Abrupt process stop/reopen retains the exact last acknowledged workspace');
   await verifyProgress({evaluate,clientSend:(...args)=>client.send(...args),clickButton,typeAt,workspace,until,notice,root,recordSet,exportFile,restoreFile,
     nativeDialog,ready,closeApplication,launch,checks,emptyProgress});
+  await verifyStudy({evaluate,clientSend:(...args)=>client.send(...args),clickButton,typeAt,workspace,until,notice,root,exportFile,previewFile,
+    nativeDialog,ready,closeApplication,launch,checks});
   await closeApplication();
-  await writeFile(path.join(root, 'native-result.json'), JSON.stringify({ passed: true, checks, dialogs, offline,
+  await writeFile(path.join(root, 'native-result.json'), JSON.stringify({ passed: true, checks, dialogs, offline, startup,
     limitations: ['Offline denial is scoped to WebView2; Rust/OS-wide networking is not blocked.', 'Interruption tested before import confirmation and after acknowledged writes, not during a physical power failure.'] }, null, 2));
   console.log(`PASS: ${checks.length} installed WebView2 lifecycle checks`);
 } catch (error) {
@@ -463,7 +490,7 @@ try {
       await writeFile(path.join(root, 'failure-ui.json'), JSON.stringify(await evaluate('({text:document.body.innerText, focus:document.activeElement?.outerHTML})'), null, 2));
     } catch { /* Preserve the original failure if the renderer is already gone. */ }
   }
-  await writeFile(path.join(root, 'native-result.json'), JSON.stringify({ passed: false, checks, dialogs, offline, failure: error.message }, null, 2));
+  await writeFile(path.join(root, 'native-result.json'), JSON.stringify({ passed: false, checks, dialogs, offline, startup, failure: error.message }, null, 2));
   throw error;
 } finally {
   client?.close();

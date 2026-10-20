@@ -1,10 +1,10 @@
 # Ascension
 
-Ascension is a Windows-first, local-first workspace for resuming a concrete next action. The authorized [Stage 3b scope](docs/specs/STAGE_3B.md) extends the saved project/objective/action/note workflow with prospective criteria, progress evidence, local user acceptance, corrections, and fictional Build Credit issuance. It requires no AI, game, account, or network service.
+Ascension is a Windows-first, local-first workspace for resuming a concrete next action. [Stage 3b](docs/specs/STAGE_3B.md) adds prospective criteria, progress evidence, local acceptance, corrections, and fictional Build Credits. The authorized [Stage 3c scope](docs/specs/STAGE_3C.md) adds optional work opportunity logging, explicit personal-study infrastructure, and one fixed Beacon Commonwealth restoration scene. It requires no AI, account, or network service.
 
-Stage 3a was verified and merged in PR #1. Stage 3b implementation and verification are tracked in the [Stage 3b executed verification log](docs/implementation/STAGE_3B_VERIFICATION.md). Historical Stage 3a results remain in its [verification log](docs/implementation/STAGE_3A_VERIFICATION.md#verification-closure--2026-10-19).
+Stage 3a and Stage 3b were merged in PRs #1 and #2. Current implementation evidence is in the [Stage 3c verification log](docs/implementation/STAGE_3C_VERIFICATION.md). Historical [Stage 3b](docs/implementation/STAGE_3B_VERIFICATION.md) and [Stage 3a](docs/implementation/STAGE_3A_VERIFICATION.md#verification-closure--2026-10-19) results remain separate.
 
-The Work view keeps the next action and resumption note primary. Progress review is optional and fictional rewards start hidden. No timer or task click demonstrates accomplishment. There is no game, spending, external verification runner, cloud sync, telemetry, payment, or automatic ingestion.
+The Work view keeps the next action and resumption note primary. Progress review, opportunity tracking, and construction are optional. No timer or task click demonstrates accomplishment. There is no strategic gameplay, spending, external verification runner, cloud sync, telemetry, payment, or automatic ingestion.
 
 ## Architecture
 
@@ -15,9 +15,10 @@ The accepted stack is React + TypeScript + Vite, a Tauri 2 desktop shell, and pr
 - [ADR-0002: records, selection, and explicit restore](docs/decisions/ADR-0002-stage-3a-records-and-restore.md)
 - [ADR-0003: targeted ordinary mutations](docs/decisions/ADR-0003-targeted-mutations.md)
 - [ADR-0004: progress authority and portability](docs/decisions/ADR-0004-progress-authority-and-portability.md)
+- [ADR-0005: opportunities and construction](docs/decisions/ADR-0005-opportunities-and-construction.md)
 - [Record, command, and interchange contracts](contracts/README.md)
 
-The contract defines typed commands, stable identities, validation limits, complete interchange v2 and bounded legacy v1 imports. Database migration versions are separate from export schema versions.
+The contract defines typed commands, stable identities, validation limits, complete interchange v3, and bounded legacy v1/v2 compatibility. Database migration v4 is separate from interchange versions.
 
 ## Work flow
 
@@ -29,6 +30,16 @@ The contract defines typed commands, stable identities, validation limits, compl
 Each objective has at most one action and one note. Clearing a note removes that optional record; adding a note later creates a new identity. No click or timer marks an objective accomplished.
 
 Expand **Progress and evidence** to review and lock a criterion before eligible work. Record concise evidence, save a review snapshot, inspect its complete registered basis, then accept, reject, or leave it pending. Locked criteria require prospective new versions; an objective's lifetime allocation never exceeds four fictional BC. Accepted progress and rewards are distinct. Corrections preserve history and retain issued credits while keeping the entitlement consumed. Reacceptance requires fresh review and cannot mint the original allocation again. **Show fictional rewards** reveals the ledger-derived balance; the normal work workflow remains available with it hidden.
+
+## Optional opportunities and construction
+
+Under **Work opportunities**, declare a short schedule epoch label, then confirm the meaningful first action and available work time. The app freezes the saved action, definition, cue, eligibility, and observation window. No daily opportunity is required. Planned rest remains legitimate; optional energy context does not automatically exclude an opportunity.
+
+After the cue, record a meaningful start, a known nonstart, or uncertainty. A missed observation stays missing, with unknown latency. An approximate time that crosses the window boundary stays uncertain. Later starts and corrections preserve earlier reports. Optional exclusive time estimates, priority advancement, domain-specific quality, and weekly reflection remain separate from reward acceptance.
+
+E00 is explicitly started feasibility logging. The proposed 90% completeness and two-minute capture targets require actual ordinary use; engineering tests do not prove feasibility. E01 configuration freezes a seeded balanced allocation and protocol without activating it. Readiness and activation require explicit assessment and owner acknowledgments. Both arms use identical work support, numeric feedback, and authoritative credits; the additional treatment is a 60-second pre-cue construction preview and a checkpoint after the observation window. Future allocations remain hidden in the ordinary interface. Users may pause, leave, or disable construction. Closed-app cues are not delivered in the background.
+
+**View construction** opens the optional original SVG settlement. One issued BC restores one of 64 fixed units. The scene progresses while hidden, retains courtesy credits after factual correction, and saturates at 64 while legitimate ledger issuance continues. It cannot grant, spend, reserve, or collect credits. There are no strategic choices or absence penalties. Construction is an untested presentation hypothesis, not evidence of increased productivity.
 
 ## Windows prerequisites
 
@@ -78,7 +89,7 @@ The automated test, typecheck, frontend build, and formatting commands passed fo
 
 The final `-- --locked` forwards the lockfile requirement to Cargo. Tauri runs the frontend build and creates the configured NSIS installer under `src-tauri/target/release/bundle/nsis/`. The normal package is named `Ascension_0.1.0_x64-setup.exe`; the new isolated harness produces `Ascension Verification <run-id>_0.1.0_x64-setup.exe`.
 
-For repeatable installed-app lifecycle checks, run `scripts/verify-native.ps1`. It builds a unique verification package, silently installs into an ignored repository-local directory, verifies its actual disposable data path, drives its WebView2 UI through loopback CDP and real Windows file dialogs through a bounded UIA/Win32 helper, then uninstalls that test package. No normal user profile is opened. The [verification log](docs/implementation/STAGE_3B_VERIFICATION.md) records the exact invocation for shells that disable `.ps1` files, plus results and limits. The harness covers populated legacy migration, keyboard entry/save, editing, focus/validation, evidence and acceptance, duplicate/stale settlement, correction without reminting, complete export/restore, rejection, backups, graceful restart and abrupt-stop recovery.
+For repeatable installed-app lifecycle checks, run `scripts/verify-native.ps1`. It builds a unique verification package, silently installs into an ignored repository-local directory, verifies its actual disposable data path, drives its WebView2 UI through loopback CDP and real Windows file dialogs through a bounded UIA/Win32 helper, then uninstalls that test package. No normal user profile is opened. The [verification log](docs/implementation/STAGE_3C_VERIFICATION.md) records the exact invocation for shells that disable `.ps1` files, plus results and limits. The harness covers populated legacy migration, keyboard entry/save, editing, focus/validation, evidence and acceptance, duplicate/stale settlement, correction without reminting, complete export/restore, rejection, backups, graceful restart and abrupt-stop recovery. Its synthetic study checks additionally exercise prospective opportunities, honest missingness, explicit E01 activation, matched presentation, retained corrections, and the 64-unit construction cap.
 
 The offline helper verifies an ordinary renderer request succeeds online and fails without reaching its owned loopback server while offline, then reloads the app and checks unchanged saved records. It leaves that WebView2 target offline for the native workflows and repeats the probe after each restart. A refused proxy is also set from process launch. OS and Rust-process networking are unchanged. Installers remain unsigned and require preinstalled WebView2. No signing, public release, or CI deployment was performed.
 
@@ -90,12 +101,12 @@ Use **Export records** to save a complete portable JSON copy of committed work a
 
 **Import records** opens and validates a file, then displays local and incoming record counts. **Replace local records** is a separate confirmation: the incoming record set replaces the local set, including removal of records absent from the file. The app creates a synchronized `before-restore-<UUID>.json` backup first. If the backup or replacement fails, the existing workspace remains intact. Reimporting equivalent records is a no-op, preserving identities and revisions. Invalid JSON, duplicate identities, broken references, and unsupported schema versions are rejected before replacement.
 
-Restore backups are complete schema-version-2 JSON and can be selected through **Import records**. Legacy v1 imports create unaccepted draft criteria and are rejected when replacement would erase earned history. A database upgrade creates a separate verified `before-migration-<UUID>.sqlite3` snapshot; these SQLite recovery files are not JSON imports. Backups remain local and are not automatically pruned. Both exports and backups contain entered work/evidence text.
+Restore backups are complete schema-version-3 JSON and can be selected through **Import records**. They include frozen study allocations, observations, corrections, exposures, burden, reflections, and construction preferences. Legacy v1 imports create unaccepted draft criteria and are rejected when replacement would erase earned history. Legacy v1/v2 files cannot replace consequential opportunity/study history they omit. A database upgrade creates a separate verified `before-migration-<UUID>.sqlite3` snapshot; these SQLite recovery files are not JSON imports. Backups remain local and are not automatically pruned. Exports and backups contain entered work, evidence, and study text.
 
-Imports and saved workspaces are bounded to 10 MiB and 10,000 records across work and progress; field limits are listed in the [contract](contracts/README.md). Legacy [synthetic sample](contracts/fixtures/sample-v1.json) and [empty](contracts/fixtures/empty-v1.json) fixtures remain for compatibility testing. Confirmed modern replacement can intentionally discard reward history, with a complete recovery backup; it is not a merge.
+Imports and saved workspaces are bounded to 10 MiB and 10,000 records across work, progress, and study history; field limits are listed in the [contract](contracts/README.md). Legacy [synthetic sample](contracts/fixtures/sample-v1.json) and [empty](contracts/fixtures/empty-v1.json) fixtures remain for compatibility testing. Confirmed modern replacement can intentionally discard reward history, with a complete recovery backup; it is not a merge.
 
 ## Repository safety and contribution scope
 
-Follow [AGENTS.md](AGENTS.md). Use synthetic records in fixtures and diagnostics. Keep personal work, credentials, database files, runtime backups, installer output, and private exports out of Git. This repository includes no CI workflow or release automation; local build commands do not push or publish anything. Scope expansion beyond Stage 3b requires separate owner authorization.
+Follow [AGENTS.md](AGENTS.md). Use synthetic records in fixtures and diagnostics. Keep personal work, credentials, database files, runtime backups, installer output, and private exports out of Git. This repository includes no CI workflow or release automation; local build commands do not push or publish anything. Scope expansion beyond Stage 3c requires separate owner authorization.
 
-Development stops at Stage 3b. Restore remains replacement-only, backups are retained without automatic pruning, and the unsigned Windows package assumes WebView2 is already installed. No Stage 3c/4 work is authorized.
+Development stops at Stage 3c. Restore remains replacement-only, backups are retained without automatic pruning, and the unsigned Windows package assumes WebView2 is already installed. Stage 4 and real E01 enrollment by the implementation agent remain unauthorized.

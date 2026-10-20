@@ -10,6 +10,7 @@ use tauri::State;
 
 use crate::progress::*;
 use crate::service::{AcceptanceResult, ReviewResult};
+use crate::study::*;
 use crate::{domain::*, service::WorkspaceService};
 
 #[derive(Clone)]
@@ -557,4 +558,103 @@ mod tests {
             original
         );
     }
+}
+
+#[tauri::command]
+pub(crate) async fn create_schedule_epoch(
+    state: State<'_, AppState>,
+    input: CreateScheduleEpochInput,
+) -> Result<Workspace, CommandError> {
+    service_task(state.inner().clone(), move |service| {
+        service.create_schedule_epoch(input)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn configure_study(
+    state: State<'_, AppState>,
+    input: ConfigureStudyInput,
+) -> Result<Workspace, CommandError> {
+    service_task(state.inner().clone(), move |service| {
+        service.configure_study(input)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn transition_study(
+    state: State<'_, AppState>,
+    input: TransitionStudyInput,
+) -> Result<Workspace, CommandError> {
+    service_task(state.inner().clone(), move |service| {
+        service.transition_study(input)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn plan_opportunity(
+    state: State<'_, AppState>,
+    input: PlanOpportunityInput,
+) -> Result<Workspace, CommandError> {
+    service_task(state.inner().clone(), move |service| {
+        service.plan_opportunity(input)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn record_opportunity_outcome(
+    state: State<'_, AppState>,
+    input: RecordOpportunityOutcomeInput,
+) -> Result<Workspace, CommandError> {
+    service_task(state.inner().clone(), move |service| {
+        service.record_opportunity_outcome(input)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn record_study_exposure(
+    state: State<'_, AppState>,
+    input: RecordStudyExposureInput,
+) -> Result<Workspace, CommandError> {
+    service_task(state.inner().clone(), move |service| {
+        service.record_study_exposure(input)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn record_study_burden(
+    state: State<'_, AppState>,
+    input: RecordStudyBurdenInput,
+) -> Result<Workspace, CommandError> {
+    service_task(state.inner().clone(), move |service| {
+        service.record_study_burden(input)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn record_study_reflection(
+    state: State<'_, AppState>,
+    input: RecordStudyReflectionInput,
+) -> Result<Workspace, CommandError> {
+    service_task(state.inner().clone(), move |service| {
+        service.record_study_reflection(input)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn set_construction_enabled(
+    state: State<'_, AppState>,
+    input: SetConstructionEnabledInput,
+) -> Result<Workspace, CommandError> {
+    service_task(state.inner().clone(), move |service| {
+        service.set_construction_enabled(input)
+    })
+    .await
 }

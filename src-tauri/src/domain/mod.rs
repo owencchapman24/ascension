@@ -89,6 +89,8 @@ pub struct Workspace {
     pub actions: Vec<NextAction>,
     pub notes: Vec<ResumptionNote>,
     pub progress: ProgressState,
+    #[serde(serialize_with = "crate::study::serialize_view")]
+    pub study: crate::study::StudyState,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -105,6 +107,8 @@ pub struct RecordSet {
     pub notes: Vec<ResumptionNote>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<ProgressState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub study: Option<crate::study::StudyState>,
 }
 
 fn required_nullable<'de, D: serde::Deserializer<'de>>(
@@ -117,13 +121,14 @@ impl From<&Workspace> for RecordSet {
     fn from(workspace: &Workspace) -> Self {
         Self {
             format: "ascension-records".into(),
-            schema_version: 2,
+            schema_version: 3,
             selected_objective_id: workspace.selected_objective_id.clone(),
             projects: workspace.projects.clone(),
             objectives: workspace.objectives.clone(),
             actions: workspace.actions.clone(),
             notes: workspace.notes.clone(),
             progress: Some(workspace.progress.clone()),
+            study: Some(workspace.study.clone()),
         }
     }
 }
@@ -134,12 +139,19 @@ impl RecordSet {
             self.progress = Some(crate::progress::from_legacy(&self.objectives));
             self.schema_version = 2;
         }
+        if self.schema_version == 2 && self.study.is_none() {
+            self.study = Some(crate::study::StudyState::default());
+            self.schema_version = 3;
+        }
     }
     pub fn normalize(&mut self) {
         self.projects.sort_by(|a, b| a.id.cmp(&b.id));
         self.objectives.sort_by(|a, b| a.id.cmp(&b.id));
         self.actions.sort_by(|a, b| a.id.cmp(&b.id));
         self.notes.sort_by(|a, b| a.id.cmp(&b.id));
+        if let Some(study) = &mut self.study {
+            study.normalize();
+        }
         if let Some(progress) = &mut self.progress {
             progress.normalize();
         }
@@ -153,6 +165,7 @@ impl RecordSet {
             actions: self.actions,
             notes: self.notes,
             progress: self.progress.unwrap_or_default(),
+            study: self.study.unwrap_or_default(),
         }
     }
 }
@@ -215,6 +228,14 @@ pub struct RecordCounts {
     pub ledger: usize,
     pub commands: usize,
     pub wallet_bc: u32,
+    pub opportunities: usize,
+    pub assignments: usize,
+    pub outcome_events: usize,
+    pub study_manifests: usize,
+    pub schedule_epochs: usize,
+    pub exposures: usize,
+    pub burdens: usize,
+    pub reflections: usize,
 }
 impl From<&Workspace> for RecordCounts {
     fn from(workspace: &Workspace) -> Self {
@@ -232,6 +253,14 @@ impl From<&Workspace> for RecordCounts {
             ledger: workspace.progress.ledger.len(),
             commands: workspace.progress.commands.len(),
             wallet_bc: workspace.progress.wallet_bc,
+            opportunities: workspace.study.opportunities.len(),
+            assignments: workspace.study.assignments.len(),
+            outcome_events: workspace.study.outcomes.len(),
+            study_manifests: workspace.study.manifests.len(),
+            schedule_epochs: workspace.study.epochs.len(),
+            exposures: workspace.study.exposures.len(),
+            burdens: workspace.study.burdens.len(),
+            reflections: workspace.study.reflections.len(),
         }
     }
 }
@@ -317,7 +346,7 @@ fn metadata(
 }
 
 pub(crate) fn validate_records(records: &RecordSet) -> Result<(), CommandError> {
-    if ![1, 2].contains(&records.schema_version) {
+    if ![1, 2, 3].contains(&records.schema_version) {
         return Err(CommandError::new(
             "unsupported_schema",
             "This record schema version is not supported. Your saved workspace is unchanged.",
@@ -329,7 +358,9 @@ pub(crate) fn validate_records(records: &RecordSet) -> Result<(), CommandError> 
         ));
     }
     if (records.schema_version == 1 && records.progress.is_some())
-        || (records.schema_version == 2 && records.progress.is_none())
+        || (records.schema_version >= 2 && records.progress.is_none())
+        || (records.schema_version < 3 && records.study.is_some())
+        || (records.schema_version == 3 && records.study.is_none())
     {
         return Err(CommandError::invalid(
             "The record schema and complete progress state do not match.",
@@ -341,6 +372,10 @@ pub(crate) fn validate_records(records: &RecordSet) -> Result<(), CommandError> 
         + records.notes.len()
         + records
             .progress
+            .as_ref()
+            .map_or(0, |state| state.record_count())
+        + records
+            .study
             .as_ref()
             .map_or(0, |state| state.record_count())
         > MAX_RECORDS
@@ -452,6 +487,9 @@ pub(crate) fn validate_records(records: &RecordSet) -> Result<(), CommandError> 
             commands
         );
         crate::progress::validate(progress, &records.objectives)?;
+    }
+    if let Some(study) = &records.study {
+        crate::study::validate(study, records)?;
     }
     if encoded_records(records)?.len() > MAX_IMPORT_BYTES {
         return Err(CommandError::invalid(
