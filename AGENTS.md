@@ -10,7 +10,11 @@ This is a **public** repository for a Windows-first, local-first productivity ap
 - Do not access APIs, cloud accounts, external project directories, connectors, or files other than normal public dependency registries without explicit approval.
 - Do not add Actions workflows until tests exist and the workflow is deliberately reviewed for permissions, secrets, trigger scope, and artifact retention. Public runners still have concurrency, storage and security considerations.
 
-## Current goal — Stage 4 (owner authorized)
+## Current goal — Stage 4.5 (owner authorized)
+
+The owner's Stage 4.5 assignment authorizes daily-use Work improvements: objective lifecycle and explicit priority/focus, append-only factual checkpoints with atomic saved-action updates and replay protection, voluntary initiation support, simpler ordinary opportunities, coherent automatic local snapshots, recovery, additive database v6 and complete interchange v5. Read `docs/specs/STAGE_4_5.md` and ADR-0007 in addition to the baseline documents below. Work exclusively on `feat/stage-4-5-daily-use`, based on Stage 4 merge `c27c1d7`. Verified local commits and isolated installed-Windows QA are authorized; pushing, merging, publishing, releasing, deployment, Actions workflows, AI, Stage 5, real study activation, and modifying the normal installation/profile are not. Preserve all prior authority and economy invariants. The specific Stage 4.5 authorization supersedes the historical Stage 4 branch/stop instruction below.
+
+## Historical Stage 4 authorization
 
 The owner's Stage 4 assignment authorizes one River Reach strategy chapter, construction reservations/spending, reusable funded capacity, spatial placement, free reconfiguration/undo, three alternative routes, an immutable Chronicle ending, sandbox alternatives, and complete portability. Read `docs/specs/STAGE_3B.md`, `docs/specs/STAGE_3C.md`, and `docs/specs/STAGE_4.md` in addition to the Stage 3a baseline documents. Preserve Stage 3a/3b/3c behavior, data, evidence authority, `bc-v1` issuance invariants, and the fixed H1 instrument. Work on `feat/stage-4-river-reach`; local verified commits are authorized, but pushing, merging, publishing, deploying, and releasing are not. Do not activate real E00/E01 studies on behalf of the owner; synthetic isolated tests may exercise the engine. Stage 5 remains excluded.
 
@@ -35,4 +39,4 @@ Do **not** add AI, API calls, broad project-file scanning, cloud sync, accounts,
 
 ## Working method
 
-Inspect `git status` and the environment first. Report missing Node/npm, Rust MSVC, Windows C++ Build Tools or WebView2 before requesting changes. Use pinned compatible dependencies and commit lockfiles. Make small, tested, reviewable commits; record test commands and real results. If a framework/toolchain change is necessary, propose the smallest alternative and request approval before switching. Maintain an architectural decision record for any departure from these constraints. **Stop at Stage 4 and request approval before expanding scope.**
+Inspect `git status` and the environment first. Report missing Node/npm, Rust MSVC, Windows C++ Build Tools or WebView2 before requesting changes. Use pinned compatible dependencies and commit lockfiles. Make small, tested, reviewable commits; record test commands and real results. If a framework/toolchain change is necessary, propose the smallest alternative and request approval before switching. Maintain an architectural decision record for any departure from these constraints. **Stop at Stage 4.5 and request approval before expanding scope.**
