@@ -47,6 +47,44 @@ fn ensure_empty(connection: &Connection) -> Result<(), CommandError> {
     Ok(())
 }
 
+fn check_database(
+    connection: &Connection,
+    allow_initialization: bool,
+) -> Result<u32, CommandError> {
+    let version: u32 =
+        storage(connection.pragma_query_value(None, "user_version", |row| row.get(0)))?;
+    if version > DB_SCHEMA_VERSION {
+        return Err(CommandError::new(
+            "unsupported_schema",
+            "This workspace was created by a newer app version. It has not been changed.",
+        ));
+    }
+    if version == 0 {
+        ensure_empty(connection)?;
+        if !allow_initialization {
+            // SQLite treats an existing zero-length file as a new database.
+            // Only a genuinely new path can initialize without explicit recovery.
+            return Err(CommandError::new(
+                "storage_error",
+                "The existing workspace is empty or uninitialized. It has not been recreated. Export a verified recovery copy before choosing a fresh profile.",
+            ));
+        }
+    }
+    let check: String = storage(connection.query_row("PRAGMA quick_check", [], |row| row.get(0)))?;
+    if check != "ok" {
+        return Err(CommandError::storage());
+    }
+    let broken: i64 = storage(connection.query_row(
+        "SELECT COUNT(*) FROM pragma_foreign_key_check",
+        [],
+        |row| row.get(0),
+    ))?;
+    if broken != 0 {
+        return Err(CommandError::storage());
+    }
+    Ok(version)
+}
+
 impl Repository {
     pub(crate) fn open(path: &Path, backup_dir: &Path) -> Result<Self, CommandError> {
         if let Some(parent) = path
@@ -56,43 +94,26 @@ impl Repository {
             fs::create_dir_all(parent).map_err(|_| CommandError::storage())?;
         }
         let existed = path.try_exists().map_err(|_| CommandError::storage())?;
+        if existed {
+            // A writable connection can checkpoint committed WAL on close, even
+            // when opening the workspace later fails. Inspect physical integrity
+            // read-only first so a damaged primary/WAL family is left available
+            // for explicit recovery. One snapshot keeps these checks consistent.
+            let preflight = storage(Connection::open_with_flags(
+                path,
+                OpenFlags::SQLITE_OPEN_READ_ONLY,
+            ))?;
+            storage(preflight.busy_timeout(Duration::from_secs(5)))?;
+            let snapshot = storage(preflight.unchecked_transaction())?;
+            check_database(&snapshot, false)?;
+            storage(snapshot.commit())?;
+        }
         let mut connection = storage(Connection::open(path))?;
         storage(connection.busy_timeout(Duration::from_secs(5)))?;
-        // Inspect compatibility before any pragma that changes the existing database.
-        let version: u32 =
-            storage(connection.pragma_query_value(None, "user_version", |row| row.get(0)))?;
-        if version > DB_SCHEMA_VERSION {
-            return Err(CommandError::new(
-                "unsupported_schema",
-                "This workspace was created by a newer app version. It has not been changed.",
-            ));
-        }
-        if version == 0 {
-            ensure_empty(&connection)?;
-            if existed {
-                // SQLite treats an existing zero-length file as a new database.
-                // It may instead be a damaged primary, so only a genuinely new
-                // path is allowed to initialize without an explicit recovery step.
-                return Err(CommandError::new(
-                    "storage_error",
-                    "The existing workspace is empty or uninitialized. It has not been recreated. Export a verified recovery copy before choosing a fresh profile.",
-                ));
-            }
-        }
-        let check: String =
-            storage(connection.query_row("PRAGMA quick_check", [], |row| row.get(0)))?;
-        if check != "ok" {
-            return Err(CommandError::storage());
-        }
+        // Recheck on the writable connection; preflight does not authorize later
+        // state blindly if another process changed the database between opens.
+        let version = check_database(&connection, !existed)?;
         storage(connection.pragma_update(None, "foreign_keys", "ON"))?;
-        let broken: i64 = storage(connection.query_row(
-            "SELECT COUNT(*) FROM pragma_foreign_key_check",
-            [],
-            |row| row.get(0),
-        ))?;
-        if broken != 0 {
-            return Err(CommandError::storage());
-        }
         if version < DB_SCHEMA_VERSION {
             let transaction =
                 storage(connection.transaction_with_behavior(TransactionBehavior::Immediate))?;
