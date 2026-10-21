@@ -103,10 +103,20 @@ describe("Work", () => {
     expect(screen.getByRole("dialog", { name: "Keep your unsaved draft?" })).toBeVisible(); expect(api.restoreImport).not.toHaveBeenCalled(); await user.click(screen.getByRole("button", { name: "Keep editing" }));
     expect(screen.getByLabelText("What changed?")).toHaveValue("Keep my local stopping note"); await waitFor(() => expect(screen.getByLabelText("What changed?")).toHaveFocus());
   });
-  it("offers a recovery export when the live workspace cannot be opened", async () => {
-    vi.mocked(api.loadWorkspace).mockRejectedValue({ code: "storage_error", message: "Could not open local records." }); vi.mocked(api.exportRecovery).mockResolvedValue({ file_name: "synthetic-recovery.json" });
+  it.each(["saved", "cancelled"] as const)("keeps failed-load recovery controls usable after a %s recovery export", async (result) => {
+    vi.mocked(api.loadWorkspace).mockRejectedValueOnce({ code: "storage_error", message: "Could not open local records." }).mockResolvedValue(saved);
+    let finishExport!: (value: api.ExportResult | null) => void;
+    vi.mocked(api.exportRecovery).mockReturnValue(new Promise((resolve) => { finishExport = resolve; }));
     const user = userEvent.setup(); render(<App />); await screen.findByRole("alert"); await user.click(screen.getByRole("button", { name: "Export recovery copy" }));
-    expect(api.exportRecovery).toHaveBeenCalledTimes(1); expect(await screen.findByRole("status")).toHaveTextContent("synthetic-recovery.json"); expect(api.restoreImport).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not open local records.");
+    expect(screen.getByRole("button", { name: "Retry connection" })).toBeDisabled(); expect(screen.getByRole("button", { name: "Export recovery copy" })).toBeDisabled();
+    await act(async () => finishExport(result === "saved" ? { file_name: "synthetic-recovery.json" } : null));
+    expect(api.exportRecovery).toHaveBeenCalledTimes(1); expect(api.restoreImport).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not open local records."); expect(screen.getByRole("button", { name: "Export recovery copy" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Retry connection" })).toBeEnabled();
+    if (result === "saved") expect(screen.getByRole("status")).toHaveTextContent("synthetic-recovery.json"); else expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Retry connection" })); await screen.findByRole("heading", { name: "Sketch the bed on paper" });
+    expect(api.loadWorkspace).toHaveBeenCalledTimes(2); expect(screen.queryByRole("alert")).not.toBeInTheDocument(); expect(screen.queryByRole("button", { name: "Retry connection" })).not.toBeInTheDocument();
   });
 
   it("keeps World unloaded on startup and preserves a Work draft across voluntary navigation", async () => {

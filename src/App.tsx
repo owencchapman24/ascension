@@ -87,6 +87,8 @@ function App() {
   const [busy, setBusy] = useState(false);
   const lock = useRef(false);
   const [error, setError] = useState<CommandError | null>(null);
+  const [loadError, setLoadError] = useState<CommandError | null>(null);
+  const visibleError = error ?? loadError;
   const [validationError, setValidationError] = useState<ValidationError | null>(null);
   const [notice, setNotice] = useState("");
   const [editor, setEditor] = useState<Editor | null>(null);
@@ -128,13 +130,14 @@ function App() {
 
   function adopt(next: Workspace, preferredProject?: string) {
     setWorkspace(next);
+    setLoadError(null);
     setProjectId((previous) => next.objectives.find((item) => item.id === next.selected_objective_id)?.project_id
       ?? (next.projects.some((item) => item.id === preferredProject) ? preferredProject! : next.projects.some((item) => item.id === previous) ? previous : next.projects[0]?.id ?? ""));
   }
 
   useEffect(() => {
     let active = true;
-    api.loadWorkspace().then((next) => { if (active) adopt(next); }, (cause: unknown) => { if (active) setError(api.normalizeError(cause)); })
+    api.loadWorkspace().then((next) => { if (active) adopt(next); }, (cause: unknown) => { if (active) setLoadError(api.normalizeError(cause)); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, []);
@@ -164,8 +167,8 @@ function App() {
     if (validationError) document.getElementById(`${validationError.field}-error`)?.scrollIntoView?.({ block: "nearest" });
   }, [validationError]);
   useEffect(() => {
-    if (error && !editor && !preview) errorNoticeRef.current?.scrollIntoView?.({ block: "nearest" });
-  }, [error, editor, preview]);
+    if (visibleError && !editor && !preview) errorNoticeRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [visibleError, editor, preview]);
 
   async function perform(task: () => Promise<void>) {
     if (lock.current) return false;
@@ -242,10 +245,10 @@ function App() {
     }), () => setPreview(null), true);
   }
 
-  const errorNotice = error && (
+  const errorNotice = visibleError && (
     <div className="error-banner" ref={errorNoticeRef}>
-      <p role="alert">{error.message}</p>
-      {error.code === "conflict" && <p>Your saved records changed. Reload to review them before trying again.</p>}
+      <p role="alert">{visibleError.message}</p>
+      {visibleError.code === "conflict" && <p>Your saved records changed. Reload to review them before trying again.</p>}
       <button type="button" className="secondary" disabled={busy || !!guard} onClick={reload}>
         {workspace ? "Reload saved records" : "Retry connection"}
       </button>

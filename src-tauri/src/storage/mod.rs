@@ -55,6 +55,7 @@ impl Repository {
         {
             fs::create_dir_all(parent).map_err(|_| CommandError::storage())?;
         }
+        let existed = path.try_exists().map_err(|_| CommandError::storage())?;
         let mut connection = storage(Connection::open(path))?;
         storage(connection.busy_timeout(Duration::from_secs(5)))?;
         // Inspect compatibility before any pragma that changes the existing database.
@@ -68,6 +69,15 @@ impl Repository {
         }
         if version == 0 {
             ensure_empty(&connection)?;
+            if existed {
+                // SQLite treats an existing zero-length file as a new database.
+                // It may instead be a damaged primary, so only a genuinely new
+                // path is allowed to initialize without an explicit recovery step.
+                return Err(CommandError::new(
+                    "storage_error",
+                    "The existing workspace is empty or uninitialized. It has not been recreated. Export a verified recovery copy before choosing a fresh profile.",
+                ));
+            }
         }
         let check: String =
             storage(connection.query_row("PRAGMA quick_check", [], |row| row.get(0)))?;
