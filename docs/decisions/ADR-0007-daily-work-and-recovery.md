@@ -12,6 +12,8 @@ Ordinary planning reuses the existing opportunity validator but creates/selects 
 
 Additive database v6 and complete interchange v5 carry daily organization, checkpoints, and command identity. Old formats receive deterministic defaults only when compatible and cannot replace consequential newer history. No migrations or historical protocol meanings are rewritten.
 
+The modern envelope permits 12,500 total records and 12 MiB; legacy envelopes retain 10,000 records and 10 MiB. Stage 4 objective authority requires at least four records per objective (objective, parent, slot, criterion), so at most 2,499 objectives can share a valid 10,000-record workspace with a project. Adding one planning row each fits the bounded extra 2,500 records, with 2 MiB of serialization headroom. Counting the rows preserves resource limits while avoiding rejection of valid Stage 4 data merely because migration adds organization. Boundary fixtures verify count and byte compatibility.
+
 Automatic local snapshots use SQLite's backup API on a background worker, then verify SQLite structure/references and the complete application authority graph before finalizing. Snapshot status is separate from workspace generations and mutation success. At most one verified daily point is finalized per local date. Retention is the union of seven newest days and one point for each of three newest represented months. Only owned, validated files are eligible for pruning. Existing import preview/confirmation is the authority for intentional replacement.
 
 ## Consequences
