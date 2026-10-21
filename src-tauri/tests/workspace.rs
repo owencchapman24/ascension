@@ -91,7 +91,7 @@ fn save_input(workspace: &Workspace, note: Option<String>) -> SaveWorkInput {
 }
 
 fn assert_legacy_records_preserved(actual: &RecordSet, legacy: &RecordSet) {
-    assert_eq!(actual.schema_version, 3);
+    assert_eq!(actual.schema_version, 4);
     assert_eq!(actual.format, legacy.format);
     assert_eq!(actual.projects, legacy.projects);
     assert_eq!(actual.objectives, legacy.objectives);
@@ -144,7 +144,7 @@ fn initialization_and_restart_preserve_authoritative_records_and_selection() {
         connection
             .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
             .unwrap(),
-        4
+        5
     );
 }
 
@@ -1289,7 +1289,7 @@ fn valid_sqlite_with_corrupted_current_records_is_rejected_without_replacing_rec
             connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
                 .unwrap(),
-            4
+            5
         );
         assert!(!fixture.backups.exists());
     }

@@ -1,4 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import type { WorldCommandInput, WorldCommandResult, WorldPreview, WorldPreviewInput, WorldState, WorldView } from "../world/types";
 
 export interface RecordMetadata { id: string; revision: number; created_at: string; updated_at: string }
 export interface Project extends RecordMetadata { title: string }
@@ -14,6 +15,7 @@ export interface Workspace {
   notes: ResumptionNote[];
   progress: ProgressState;
   study: StudyView;
+  world: WorldState;
 }
 export type EvidencePolicy = "user_attestation" | "referenced_evidence" | "trusted_validation";
 export type Assistance = "none" | "assisted" | "generated";
@@ -59,7 +61,7 @@ export interface ProgressState {
   grants: RewardGrant[]; ledger: LedgerEntry[]; audit: AuditEvent[]; commands: CommittedCommand[]; wallet_bc: number;
 }
 export interface SettlementResult { acceptance_id: string; grant_id: string | null; issued_bc: number; balance_bc: number; retained_reward: boolean }
-export interface RecordCounts { projects: number; objectives: number; actions: number; notes: number; criteria: number; evidence: number; snapshots: number; acceptances: number; corrections: number; grants: number; ledger: number; commands: number; wallet_bc: number; opportunities: number; assignments: number; outcome_events: number; study_manifests: number; schedule_epochs: number; exposures: number; burdens: number; reflections: number }
+export interface RecordCounts { projects: number; objectives: number; actions: number; notes: number; criteria: number; evidence: number; snapshots: number; acceptances: number; corrections: number; grants: number; ledger: number; commands: number; wallet_bc: number; opportunities: number; assignments: number; outcome_events: number; study_manifests: number; schedule_epochs: number; exposures: number; burdens: number; reflections: number; world_commands: number; world_spends: number; world_buildings: number; world_reserved_bc: number; world_spent_bc: number; world_funded_sites: number; world_endings: number }
 export interface ExportResult { file_name: string }
 export interface ImportPreview {
   token: string;
@@ -105,6 +107,9 @@ async function command<T>(name: string, input?: object): Promise<T> {
 }
 
 export const loadWorkspace = () => command<Workspace>("load_workspace");
+export const loadWorld = () => command<WorldView>("load_world");
+export const previewWorld = (input: WorldPreviewInput) => command<WorldPreview>("preview_world", input);
+export const worldCommand = (input: WorldCommandInput) => command<{ workspace: Workspace; result: WorldCommandResult }>("world_command", input);
 export const createProject = (input: ProjectInput) => command<Workspace>("create_project", input);
 export const updateProject = (input: ProjectInput & { id: string }) => command<Workspace>("update_project", input);
 export const createObjective = (input: ObjectiveInput) => command<Workspace>("create_objective", input);

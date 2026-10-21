@@ -11,6 +11,7 @@ use tauri::State;
 use crate::progress::*;
 use crate::service::{AcceptanceResult, ReviewResult};
 use crate::study::*;
+use crate::world::{WorldCommandInput, WorldPreview, WorldPreviewInput, WorldView};
 use crate::{domain::*, service::WorkspaceService};
 
 #[derive(Clone)]
@@ -24,6 +25,33 @@ fn error(code: &str, message: &str) -> CommandError {
         code: code.into(),
         message: message.into(),
     }
+}
+
+#[tauri::command]
+pub(crate) async fn load_world(state: State<'_, AppState>) -> Result<WorldView, CommandError> {
+    service_task(state.inner().clone(), |service| service.load_world()).await
+}
+
+#[tauri::command]
+pub(crate) async fn preview_world(
+    state: State<'_, AppState>,
+    input: WorldPreviewInput,
+) -> Result<WorldPreview, CommandError> {
+    service_task(state.inner().clone(), move |service| {
+        service.preview_world(input)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn world_command(
+    state: State<'_, AppState>,
+    input: WorldCommandInput,
+) -> Result<crate::service::WorldResult, CommandError> {
+    service_task(state.inner().clone(), move |service| {
+        service.world_command(input)
+    })
+    .await
 }
 
 fn storage_error() -> CommandError {

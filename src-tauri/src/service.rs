@@ -2,6 +2,9 @@ use crate::domain::*;
 use crate::progress::{self, *};
 use crate::storage::Repository;
 use crate::study::{self, *};
+use crate::world::{
+    self, WorldCommandInput, WorldCommandResult, WorldPreview, WorldPreviewInput, WorldView,
+};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -23,6 +26,12 @@ pub struct AcceptanceResult {
     pub result: SettlementResult,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct WorldResult {
+    pub workspace: Workspace,
+    pub result: WorldCommandResult,
+}
+
 pub struct WorkspaceService {
     repository: Repository,
     backup_dir: PathBuf,
@@ -30,6 +39,20 @@ pub struct WorkspaceService {
 }
 
 impl WorkspaceService {
+    pub fn load_world(&self) -> Result<WorldView, CommandError> {
+        self.repository.world_view()
+    }
+
+    pub fn preview_world(&self, input: WorldPreviewInput) -> Result<WorldPreview, CommandError> {
+        self.repository.world_preview(input)
+    }
+
+    pub fn world_command(&mut self, input: WorldCommandInput) -> Result<WorldResult, CommandError> {
+        self.repository
+            .progress_change(|connection| world::execute(connection, input))
+            .map(|(workspace, result)| WorldResult { workspace, result })
+    }
+
     pub fn set_construction_enabled(
         &mut self,
         input: SetConstructionEnabledInput,
@@ -381,6 +404,12 @@ impl WorkspaceService {
         self.discard_preview();
         let (records, source_schema) = parse_import(bytes)?;
         let workspace = self.repository.load()?;
+        if source_schema < 4 && workspace.world.has_history() {
+            return Err(CommandError::new(
+                "unsafe_legacy_import",
+                "An older export cannot replace River Reach history or its accounting. Choose a complete Stage 4 export.",
+            ));
+        }
         if source_schema < 3 && workspace.study.record_count() > 0 {
             return Err(CommandError::new(
                 "unsafe_legacy_import",
@@ -413,8 +442,10 @@ impl WorkspaceService {
                 "Legacy v1: criteria become unaccepted drafts; no credits are created. Legacy files cannot replace earned history.".into()
             } else if source_schema == 2 {
                 "Legacy v2: complete reward history is preserved; opportunity and study fields initialize empty. Older files cannot replace any existing study history.".into()
+            } else if source_schema == 3 {
+                "Legacy v3: complete reward and study history is preserved; River Reach initializes empty. Older files cannot replace any existing River Reach history or accounting.".into()
             } else {
-                "Complete replacement includes Work, reward history, schedule epochs, frozen study protocols, assignments, outcomes and corrections, exposures, burden, reflections, and construction preferences. History absent from this file will be removed. A complete recovery backup is saved first.".into()
+                "Complete replacement includes Work, reward history, schedule epochs, frozen study protocols, assignments, outcomes and corrections, exposures, burden, reflections, construction preferences, and all River Reach construction, reservations, spending, layouts, command history, and Chronicle. History absent from this file will be removed. A complete recovery backup is saved first.".into()
             },
         })
     }

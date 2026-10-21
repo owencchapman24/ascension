@@ -1,8 +1,36 @@
 # Ascension record and command contract
 
+## Stage 4 extension
+
+Current database schema is **5** and complete interchange is **4**. `005_world.sql` adds `world_chapter`, `world_spending`, and `world_commands`; migrations 1–4 and issuance policy remain unchanged. Current record sets require `progress`, `study`, and `world`. The v4 envelope explicitly preserves the prior `h1-ledger-64-v1` policy; it does not reinterpret the H1 instrument. River Reach content is separately frozen as `river-reach-v1`.
+
+`world` contains required `chapter` (explicit null before entry), `spending`, and `commands`. The complete chapter contains its stable identity/revision/content version, funded capacity, active placements, optional blueprint/reservation, selected route, one previous layout, immutable completion, and sandbox-alternative count. Spending preserves amount, added capacity, issuance prefix, FIFO issuance-entry allocations, command ID, and timestamp. Committed commands preserve their original canonical input/digest, contiguous sequence, issuance prefix/amount, timestamp, and original result. Exact strict types are in `src-tauri/src/world.rs` and frontend transport types in `src/world/types.ts`.
+
+| Command | Input | Result |
+| --- | --- | --- |
+| `load_world` | None | Authoritative chapter, derived bank/capabilities, supported site/building/route definitions, retained corrected-credit attribution |
+| `preview_world` | `chapter_id`, `content_version`, full proposed `placements` | Geometry legality, free-layout legality, errors, occupied/funded/additional sites, capabilities and route deficits |
+| `world_command` | `command_id`, `schema_version: 1`, `content_version`, `expected_world_revision`, `chapter_id`, tagged `operation` | `{ workspace, result }` after commit |
+
+World initialization uses revision 0 and a null chapter reference. Other operations use the current chapter UUID and revision. Supported operation kinds are `initialize`, `select_route`, `queue`, `replace_queue`, `reserve`, `cancel_queue`, `complete_construction`, `reconfigure`, `undo`, and `complete_chapter`. Queue/replacement takes only building type, exact site IDs, and `reserve_available`; reconfiguration takes placements with optional retained building IDs. No command accepts a price, capability, spend amount, reward authority, or arbitrary path.
+
+Every consequential command runs under the repository's immediate write transaction. Canonical exact-ID replay returns the original committed result before stale checks; altered payload returns `idempotency_conflict`. New commands recheck study access, revision, issuance, reservation, spatial legality, capacity, and limits. A normal stale decision returns `conflict`. Gameplay is withheld during active E00/E01 (`study_active`); explicit pause/leave remains a separate existing study command. World operations rotate workspace generation, invalidating stale import previews, without changing Work record revisions.
+
+The result includes command/chapter IDs, committed world revision, original spent/reserved/available/funded amounts, and optional blueprint/building/spend/ending IDs. An exact retry's original amounts can differ from the accompanying current workspace. Refresh the world view after commit; retain the same command payload for a retry after response loss. A new decision needs a new ID and inspected current revision.
+
+Six lowercase site IDs (`a1`, `a2`, `a3`, `b1`, `b2`, `b3`) form a fixed two-row, three-column grid. Specialists occupy two shared-edge sites; mixed buildings occupy one; copies are capped at two per type. Build definitions and route thresholds are returned from Rust's one versioned content definition. Preview geometry errors cannot produce a qualifying route; a legal geometry may still require additional capacity. Preview never commits.
+
+`wallet_bc` remains cumulative issued credit. The separate bank is `available = issued - spent - reserved`. Spend is irreversible, capped at 24, and funds `spent / 4` reusable site capacity (maximum six). Capacity belongs to the province, not individual coordinates. Construction charges only additional footprint beyond unused owned capacity. Atomic replacement releases the old hold and derives the new one; cancellation releases only a hold. Partial reservations provide no building or capability. Reconfiguration/undo require no active queue and cannot change funded capacity, spending, or issuance.
+
+The first explicitly confirmed qualifying route snapshots its exact layout/capabilities, content version, investment, identity, timestamp, and authored ending. Later sandbox configurations preserve it. Corrections retain issued credit and investments; FIFO attribution is shown at province-capacity level without claiming that a particular rearranged building proves an accomplishment.
+
+Interchange validation reconstructs each chapter-specific transition against its recorded issuance prefix and verifies command digests/results, FIFO spend, funded capacity, queue, layout, undo, and Chronicle before restore. Missing history, forged projections, unsupported content, overlap, diagonals, excessive copies, invalid IDs, unfunded buildings, overspending, duplicate spends, and impossible endings fail without mutation. Shared 10,000-record/10-MiB limits include world history. A modern complete replacement requires preview and a complete durable recovery backup. v1/v2/v3 replacement is rejected whenever local world history exists, including zero-spend initialization; prior reward/study legacy restrictions also apply.
+
+Import preview adds `world_commands`, `world_spends`, `world_buildings`, `world_reserved_bc`, `world_spent_bc`, `world_funded_sites`, and `world_endings` to both count sets. Restoring v4 preserves all world replay identities and reservations; repeating an equivalent restore does nothing. Older compatible records upgrade to an empty world without issuing or spending credit. There is no merge or reset command.
+
 ## Stage 3c extension
 
-The current database version is **4** and complete portable interchange version is **3**. Migration `004_study.sql` is additive; it does not change any Stage 3b reward tables or policy. Every current record set requires the complete `progress` and `study` objects. Exact strict Rust records and command inputs are defined in `src-tauri/src/study.rs`; renderer types are in `src/platform/client.ts`.
+The Stage 3c database version was **4** and complete portable interchange version was **3**. Migration `004_study.sql` is additive; it does not change any Stage 3b reward tables or policy. Every Stage 3c record set requires the complete `progress` and `study` objects. Exact strict Rust records and command inputs are defined in `src-tauri/src/study.rs`; renderer types are in `src/platform/client.ts`.
 
 Interchange **v3 itself binds every workspace to `h1-ledger-64-v1`**, including workspaces with no study manifest: exactly the first `min(64, issued BC)` fixed authored units are restored. Thus the envelope's preserved schema version carries the H1 policy even when all study collections are empty. Changing this policy requires a new supported interchange version; an unsupported version is rejected. Manifest `presentation_policy` repeats this fixed contract for protocol review and must match it.
 

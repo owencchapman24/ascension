@@ -25,6 +25,9 @@ p { margin: 0 0 16px; }
 .work-shell { max-width: 1020px; margin: 0 auto; padding: 36px 32px; }
 .app-header, .section-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
 .app-header { margin-bottom: 32px; }
+.app-navigation { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 24px; }
+.app-navigation button { min-width: 92px; }
+.world-withheld { padding: 28px; border: 1px solid #cdd9d6; border-radius: 12px; background: white; }
 .section-heading { margin-bottom: 20px; }
 .section-heading h2 { margin-bottom: 0; }
 .eyebrow, .muted { color: #4b6368; }

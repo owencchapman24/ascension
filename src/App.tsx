@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import * as api from "./platform/client";
 import type { CommandError, ImportPreview, Objective, Project, Workspace } from "./platform/client";
 import ProgressPanel from "./progress/ProgressPanel";
 import StudyPanel from "./study/StudyPanel";
 import WorldPanel from "./study/WorldPanel";
 import "./App.css";
+
+const RiverReach = lazy(() => import("./world/RiverReach"));
 
 type Editor =
   | { kind: "project"; id: string | null; title: string }
@@ -90,6 +92,12 @@ function App() {
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [progressDirty, setProgressDirty] = useState(false);
   const [studyDirty, setStudyDirty] = useState(false);
+  const [worldDirty, setWorldDirty] = useState(false);
+  const [worldBusy, setWorldBusy] = useState(false);
+  const [worldModal, setWorldModal] = useState(false);
+  const [worldEpoch, setWorldEpoch] = useState(0);
+  const [view, setView] = useState<"work" | "world" | "chronicle">("work");
+  const [worldVisited, setWorldVisited] = useState(false);
   const [progressEpoch, setProgressEpoch] = useState(0);
   const editorRef = useRef<HTMLElement>(null);
   const errorNoticeRef = useRef<HTMLDivElement>(null);
@@ -100,6 +108,7 @@ function App() {
   const project = workspace?.projects.find((item) => item.id === projectId);
   const action = workspace?.actions.find((item) => item.objective_id === selected?.id);
   const note = workspace?.notes.find((item) => item.objective_id === selected?.id);
+  const activeStudy = workspace?.study.manifests.find((item) => item.status === "active");
 
   function adopt(next: Workspace, preferredProject?: string) {
     setWorkspace(next);
@@ -150,8 +159,9 @@ function App() {
   }
 
   function resetProgressDraft() { setProgressEpoch((value) => value + 1); setProgressDirty(false); setStudyDirty(false); }
-  function protectedAction(description: string, task: () => void, onKeep?: () => void) {
-    if (dirty || progressDirty || studyDirty) setGuard({ description, action: task, onKeep });
+  function resetWorldDraft() { setWorldEpoch((value) => value + 1); setWorldDirty(false); }
+  function protectedAction(description: string, task: () => void, onKeep?: () => void, includesWorld = false) {
+    if (dirty || progressDirty || studyDirty || includesWorld && worldDirty) setGuard({ description, action: task, onKeep });
     else task();
   }
   function openEditor(next: Editor) {
@@ -173,8 +183,8 @@ function App() {
   }
   function reload() {
     protectedAction("Reloading saved records will discard this unsaved draft.", () => void perform(async () => {
-      const next = await api.loadWorkspace(); adopt(next); resetProgressDraft(); setEditor(null); setPreview(null); setNotice("Saved records reloaded.");
-    }));
+      const next = await api.loadWorkspace(); adopt(next); resetProgressDraft(); resetWorldDraft(); setEditor(null); setPreview(null); setNotice("Saved records reloaded.");
+    }), undefined, true);
   }
   function changeSelection(id: string | null, preferredProject?: string) {
     if (!workspace) return;
@@ -211,9 +221,9 @@ function App() {
     if (!preview) return;
     protectedAction("Replacing local records will discard this unsaved draft.", () => void perform(async () => {
       const result = await api.restoreImport({ token: preview.token, expected_generation: preview.generation });
-      adopt(result.workspace); resetProgressDraft(); setEditor(null); setPreview(null);
+      adopt(result.workspace); resetProgressDraft(); resetWorldDraft(); setEditor(null); setPreview(null);
       setNotice(result.unchanged ? "This export already matches your saved records. No changes were needed." : result.backup_created ? "Records restored. A backup of the previous local records was created on this device." : "Records restored on this device.");
-    }), () => setPreview(null));
+    }), () => setPreview(null), true);
   }
 
   const errorNotice = error && (
@@ -232,13 +242,19 @@ function App() {
         <div><p className="eyebrow">Your local workspace</p><h1>Ascension</h1></div>
         <span className="local-label">Stored on this device</span>
       </header>
+      {workspace && <nav className="app-navigation" aria-label="Workspace views">
+        <button type="button" disabled={worldModal || !!guard || !!preview} className={view === "work" ? "" : "secondary"} aria-current={view === "work" ? "page" : undefined} onClick={() => setView("work")}>Work</button>
+        <button type="button" disabled={worldModal || !!guard || !!preview} className={view === "world" ? "" : "secondary"} aria-current={view === "world" ? "page" : undefined} onClick={() => { setView("world"); setWorldVisited(true); }}>World</button>
+        <button type="button" disabled={worldModal || !!guard || !!preview} className={view === "chronicle" ? "" : "secondary"} aria-current={view === "chronicle" ? "page" : undefined} onClick={() => { setView("chronicle"); setWorldVisited(true); }}>Chronicle</button>
+      </nav>}
       {loading && <p role="status">Opening your saved workspace...</p>}
       {!editor && !preview && errorNotice}
       {notice && <p role="status" className="notice">{notice}</p>}
       {busy && <p role="status" className="muted">Waiting for the desktop app...</p>}
       {workspace && (
-        <fieldset className="workspace-controls" disabled={busy || !!guard || !!preview}>
+        <fieldset className="workspace-controls" disabled={busy || worldBusy || !!guard || !!preview}>
           <legend className="visually-hidden">Workspace</legend>
+          <div hidden={view !== "work"}>
           <section className="chooser" aria-label="Choose your work">
             <div className="chooser-field">
               <label htmlFor="project-select">Project</label>
@@ -370,6 +386,11 @@ function App() {
               </form>
             </section>
           )}
+          </div>
+          {worldVisited && <div hidden={view === "work"}>
+            {activeStudy ? <section className="world-withheld" aria-labelledby="world-withheld-heading"><h2 id="world-withheld-heading">Strategic World is withheld during {activeStudy.phase.toUpperCase()}</h2><p>River Reach is separate from the fixed Horizon 1 presentation. Your saved province remains intact. Pause or leave the study explicitly in Work before playing.</p><button type="button" className="secondary" onClick={() => { setView("work"); queueMicrotask(() => { document.querySelectorAll<HTMLDetailsElement>(".study-panel > details, .study-settings").forEach((item) => { item.open = true; }); document.querySelector<HTMLElement>(".study-settings > summary")?.focus(); }); }}>Return to study settings</button></section>
+              : <Suspense fallback={<p role="status">Opening River Reach…</p>}><RiverReach key={`world:${worldEpoch}`} workspace={workspace} active={view !== "work"} chronicle={view === "chronicle"} busy={busy || !!guard || !!preview} onWorkspace={adopt} onDirtyChange={setWorldDirty} onPendingChange={setWorldBusy} onModalChange={setWorldModal} onReturnToWork={() => setView("work")} onChronicle={() => setView("chronicle")} /></Suspense>}
+          </div>}
           <footer className="records-panel">
             <div>
               <h2>Records</h2>
@@ -398,7 +419,7 @@ function App() {
             <caption>Record counts</caption>
             <thead><tr><th scope="col">Records</th><th scope="col">Local</th><th scope="col">Incoming</th></tr></thead>
             <tbody>
-              {(["projects", "objectives", "actions", "notes", "criteria", "evidence", "snapshots", "acceptances", "corrections", "grants", "ledger", "commands", "wallet_bc", "schedule_epochs", "study_manifests", "opportunities", "assignments", "outcome_events", "exposures", "burdens", "reflections"] as const).map((key) => (
+              {(["projects", "objectives", "actions", "notes", "criteria", "evidence", "snapshots", "acceptances", "corrections", "grants", "ledger", "commands", "wallet_bc", "schedule_epochs", "study_manifests", "opportunities", "assignments", "outcome_events", "exposures", "burdens", "reflections", "world_commands", "world_spends", "world_buildings", "world_reserved_bc", "world_spent_bc", "world_funded_sites", "world_endings"] as const).map((key) => (
                 <tr key={key}>
                   <th scope="row">{key === "wallet_bc" ? "Build Credits" : (key[0].toUpperCase() + key.slice(1)).replace(/_/g, " ")}</th>
                   <td>{preview.current_counts[key]}</td><td>{preview.incoming_counts[key]}</td>

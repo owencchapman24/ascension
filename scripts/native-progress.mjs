@@ -91,7 +91,7 @@ export async function verifyProgress(h) {
   const full=await exportFile('stage3b-complete.json');
   assert.deepEqual(full,recordSet(reaccepted));
   const legacyPath=path.join(root,'unsafe-legacy.json');
-  const {progress:_progress,study:_study,...legacyWork}=full;
+  const {progress:_progress,study:_study,world:_world,...legacyWork}=full;
   await writeFile(legacyPath,JSON.stringify({...legacyWork,schema_version:1}));
   await clickButton('Import records'); nativeDialog('Preview an Ascension export','Select',legacyPath);
   await until(()=>evaluate("Array.from(document.querySelectorAll('[role=alert]')).some(e=>e.textContent.includes('cannot replace earned reward history'))"),'unsafe legacy import rejected');

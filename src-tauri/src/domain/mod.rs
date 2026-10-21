@@ -91,6 +91,7 @@ pub struct Workspace {
     pub progress: ProgressState,
     #[serde(serialize_with = "crate::study::serialize_view")]
     pub study: crate::study::StudyState,
+    pub world: crate::world::WorldState,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -109,6 +110,8 @@ pub struct RecordSet {
     pub progress: Option<ProgressState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub study: Option<crate::study::StudyState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub world: Option<crate::world::WorldState>,
 }
 
 fn required_nullable<'de, D: serde::Deserializer<'de>>(
@@ -121,7 +124,7 @@ impl From<&Workspace> for RecordSet {
     fn from(workspace: &Workspace) -> Self {
         Self {
             format: "ascension-records".into(),
-            schema_version: 3,
+            schema_version: 4,
             selected_objective_id: workspace.selected_objective_id.clone(),
             projects: workspace.projects.clone(),
             objectives: workspace.objectives.clone(),
@@ -129,6 +132,7 @@ impl From<&Workspace> for RecordSet {
             notes: workspace.notes.clone(),
             progress: Some(workspace.progress.clone()),
             study: Some(workspace.study.clone()),
+            world: Some(workspace.world.clone()),
         }
     }
 }
@@ -143,6 +147,10 @@ impl RecordSet {
             self.study = Some(crate::study::StudyState::default());
             self.schema_version = 3;
         }
+        if self.schema_version == 3 && self.world.is_none() {
+            self.world = Some(crate::world::WorldState::default());
+            self.schema_version = 4;
+        }
     }
     pub fn normalize(&mut self) {
         self.projects.sort_by(|a, b| a.id.cmp(&b.id));
@@ -155,6 +163,9 @@ impl RecordSet {
         if let Some(progress) = &mut self.progress {
             progress.normalize();
         }
+        if let Some(world) = &mut self.world {
+            world.normalize();
+        }
     }
     pub fn into_workspace(self, generation: String) -> Workspace {
         Workspace {
@@ -166,6 +177,7 @@ impl RecordSet {
             notes: self.notes,
             progress: self.progress.unwrap_or_default(),
             study: self.study.unwrap_or_default(),
+            world: self.world.unwrap_or_default(),
         }
     }
 }
@@ -236,6 +248,13 @@ pub struct RecordCounts {
     pub exposures: usize,
     pub burdens: usize,
     pub reflections: usize,
+    pub world_commands: usize,
+    pub world_spends: usize,
+    pub world_buildings: usize,
+    pub world_reserved_bc: u32,
+    pub world_spent_bc: u32,
+    pub world_funded_sites: u32,
+    pub world_endings: usize,
 }
 impl From<&Workspace> for RecordCounts {
     fn from(workspace: &Workspace) -> Self {
@@ -261,6 +280,37 @@ impl From<&Workspace> for RecordCounts {
             exposures: workspace.study.exposures.len(),
             burdens: workspace.study.burdens.len(),
             reflections: workspace.study.reflections.len(),
+            world_commands: workspace.world.commands.len(),
+            world_spends: workspace.world.spending.len(),
+            world_buildings: workspace
+                .world
+                .chapter
+                .as_ref()
+                .map_or(0, |chapter| chapter.layout.len()),
+            world_reserved_bc: workspace
+                .world
+                .chapter
+                .as_ref()
+                .and_then(|chapter| chapter.queue.as_ref())
+                .map_or(0, |queue| queue.reserved_bc),
+            world_spent_bc: workspace
+                .world
+                .spending
+                .iter()
+                .map(|spend| spend.amount_bc)
+                .sum(),
+            world_funded_sites: workspace
+                .world
+                .chapter
+                .as_ref()
+                .map_or(0, |chapter| chapter.funded_site_count),
+            world_endings: usize::from(
+                workspace
+                    .world
+                    .chapter
+                    .as_ref()
+                    .is_some_and(|chapter| chapter.completion.is_some()),
+            ),
         }
     }
 }
@@ -346,7 +396,7 @@ fn metadata(
 }
 
 pub(crate) fn validate_records(records: &RecordSet) -> Result<(), CommandError> {
-    if ![1, 2, 3].contains(&records.schema_version) {
+    if ![1, 2, 3, 4].contains(&records.schema_version) {
         return Err(CommandError::new(
             "unsupported_schema",
             "This record schema version is not supported. Your saved workspace is unchanged.",
@@ -360,7 +410,9 @@ pub(crate) fn validate_records(records: &RecordSet) -> Result<(), CommandError> 
     if (records.schema_version == 1 && records.progress.is_some())
         || (records.schema_version >= 2 && records.progress.is_none())
         || (records.schema_version < 3 && records.study.is_some())
-        || (records.schema_version == 3 && records.study.is_none())
+        || (records.schema_version >= 3 && records.study.is_none())
+        || (records.schema_version < 4 && records.world.is_some())
+        || (records.schema_version == 4 && records.world.is_none())
     {
         return Err(CommandError::invalid(
             "The record schema and complete progress state do not match.",
@@ -376,6 +428,10 @@ pub(crate) fn validate_records(records: &RecordSet) -> Result<(), CommandError> 
             .map_or(0, |state| state.record_count())
         + records
             .study
+            .as_ref()
+            .map_or(0, |state| state.record_count())
+        + records
+            .world
             .as_ref()
             .map_or(0, |state| state.record_count())
         > MAX_RECORDS
@@ -490,6 +546,9 @@ pub(crate) fn validate_records(records: &RecordSet) -> Result<(), CommandError> 
     }
     if let Some(study) = &records.study {
         crate::study::validate(study, records)?;
+    }
+    if let Some(world) = &records.world {
+        crate::world::validate(world, records)?;
     }
     if encoded_records(records)?.len() > MAX_IMPORT_BYTES {
         return Err(CommandError::invalid(

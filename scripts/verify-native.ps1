@@ -6,12 +6,20 @@ Set-StrictMode -Version Latest
 $repository = [IO.Path]::GetFullPath($Repository)
 Set-Location -LiteralPath $repository
 $env:PATH = (Join-Path $env:USERPROFILE '.cargo\bin') + ';' + $env:PATH
+# The existing MSVC toolchain can be present even when rustup shims are absent.
+if (!(Get-Command cargo -ErrorAction SilentlyContinue)) {
+    $toolchainBin = Join-Path $env:USERPROFILE '.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin'
+    if (Test-Path -LiteralPath (Join-Path $toolchainBin 'cargo.exe')) { $env:PATH = $toolchainBin + ';' + $env:PATH }
+}
+# Keep release compilation within the tested machine's bounded memory budget.
+$env:CARGO_BUILD_JOBS = '1'
 $runId = [Guid]::NewGuid().ToString('N')
 $runRoot = Join-Path $repository ".artifacts\native-$runId"
 $installed = Join-Path $runRoot 'installed'
 $profile = Join-Path $runRoot 'profile'
 $product = "Ascension Verification $($runId.Substring(0, 8))"
 New-Item -ItemType Directory -Path $runRoot | Out-Null
+Write-Output "Isolated verification run: native-$runId"
 $config = Join-Path $runRoot 'tauri.conf.json'
 $configuration = @{
     productName = $product
@@ -20,16 +28,27 @@ $configuration = @{
 } | ConvertTo-Json -Depth 5
 [IO.File]::WriteAllText($config, $configuration, [Text.UTF8Encoding]::new($false))
 
-& npm.cmd run tauri -- build --config $config -- --locked --offline
-if ($LASTEXITCODE -ne 0) { throw 'Isolated package build failed.' }
+# PowerShell 5 can turn native stderr (including harmless Tauri Info lines)
+# into terminating errors when the caller captures streams. Use exit codes.
+try {
+    $ErrorActionPreference = 'Continue'
+    & npm.cmd run tauri -- build --config $config -- --locked --offline
+    $buildExit = $LASTEXITCODE
+} finally { $ErrorActionPreference = 'Stop' }
+if ($buildExit -ne 0) { throw 'Isolated package build failed.' }
 $package = Join-Path $repository "src-tauri\target\release\bundle\nsis\$($product)_0.1.0_x64-setup.exe"
 try {
     $installer = Start-Process -FilePath $package -ArgumentList @('/S', "/D=$installed") -WindowStyle Hidden -Wait -PassThru
     if ($installer.ExitCode -ne 0) { throw "Installer exited $($installer.ExitCode)." }
     $executable = Join-Path $installed 'ascension.exe'
     if (!(Test-Path -LiteralPath $executable)) { throw 'Installed executable is missing.' }
-    & node scripts/native-regression.mjs $runRoot
-    if ($LASTEXITCODE -ne 0) { throw 'Installed application regression failed; see the isolated run directory.' }
+    Write-Output 'Isolated package built and installed; beginning native lifecycle verification.'
+    try {
+        $ErrorActionPreference = 'Continue'
+        & node scripts/native-regression.mjs $runRoot
+        $nativeExit = $LASTEXITCODE
+    } finally { $ErrorActionPreference = 'Stop' }
+    if ($nativeExit -ne 0) { throw 'Installed application regression failed; see the isolated run directory.' }
     @{
         installer_exit = $installer.ExitCode
         installer_sha256 = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash

@@ -61,9 +61,9 @@ export async function verifyStudy(h) {
   await closeApplication();
   const database=path.join(root,'profile','ascension.sqlite3');
   const db=new DatabaseSync(database);
-  const tables=['presentation_preferences','study_reflections','study_burdens','study_exposures','opportunity_outcomes','study_assignments','work_opportunities','study_protocol_events','study_manifests','schedule_epochs'];
+  const tables=['world_commands','world_spending','world_chapter','presentation_preferences','study_reflections','study_burdens','study_exposures','opportunity_outcomes','study_assignments','work_opportunities','study_protocol_events','study_manifests','schedule_epochs'];
   try {
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version,4);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version,5);
     db.exec('PRAGMA foreign_keys=ON;BEGIN IMMEDIATE');
     for(const table of tables) {
       const exists=db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table);
@@ -85,6 +85,11 @@ export async function verifyStudy(h) {
   await input('epoch-label','Synthetic ordinary routine');await clickButton('Save schedule epoch');await notice('Schedule epoch saved');
   await clickButton('Configure E00');await notice('E00 configured');
   await clickButton('Review E00 lifecycle');await clickButton('Begin E00 feasibility logging');await notice('E00 is now active');
+  assert.equal(await evaluate("window.__TAURI_INTERNALS__.invoke('load_world').then(()=>false,()=>true)"),true,'River Reach is withheld during active E00');
+  await clickButton('World');
+  await until(()=>evaluate("document.querySelector('.world-withheld')?.textContent.includes('E00')"),'explicit E00 strategic-game isolation');
+  assert.equal(await evaluate("document.querySelector('.river-reach')"),null);
+  await clickButton('Work');
   await clickButton('Plan an opportunity');
   await input('opportunity-start','Inspect the synthetic example and document one testable finding.');
   await clickButton('Confirm opportunity');await notice('Opportunity saved');
@@ -140,6 +145,13 @@ export async function verifyStudy(h) {
   const anchor=Date.now();
   for(let index=0;index<4;index++)await change('plan_opportunity',{...planInput,manifest_id:e01.id,cue_at:utc(anchor+(30+index*20)*60_000)});
   current=await workspace();assert.equal(current.study.assignments.length,4);
+  assert.equal(await evaluate("window.__TAURI_INTERNALS__.invoke('load_world').then(()=>false,()=>true)"),true,'River Reach is withheld during active E01');
+  await refresh(); // The synthetic activation above uses IPC rather than the UI adoption path.
+  await clickButton('World');
+  await until(()=>evaluate("document.querySelector('.world-withheld')?.textContent.includes('E01')"),'explicit E01 strategic-game isolation');
+  assert.equal(await evaluate("document.querySelector('.river-reach')"),null);
+  assert.ok(await evaluate("Array.from(document.querySelectorAll('button')).some(e=>e.textContent==='Return to study settings')"));
+  await clickButton('Work');
   assert.ok(current.study.assignments.every(a=>a.condition===null));
   assert.ok(!('seed' in current.study.manifests.find(m=>m.id===e01.id)));assert.ok(!('allocation' in current.study.manifests.find(m=>m.id===e01.id)));
   await refresh();const assigned=await exportFile('study-assigned-complete.json');
@@ -189,7 +201,7 @@ export async function verifyStudy(h) {
   assert.equal(current.study.assignments.length,4);
   assert.equal(current.study.outcomes.find(e=>e.opportunity_id===interrupted).latency_seconds,null);
   const complete=await exportFile('study-complete.json');
-  const legacy={...complete,schema_version:2};delete legacy.study;
+  const legacy={...complete,schema_version:2};delete legacy.study;delete legacy.world;
   const legacyPath=path.join(root,'unsafe-stage3b.json');await writeFile(legacyPath,JSON.stringify(legacy));
   await clickButton('Import records');nativeDialog('Preview an Ascension export','Select',legacyPath);
   await until(()=>evaluate("Array.from(document.querySelectorAll('[role=alert]')).some(e=>e.textContent.includes('study history')||e.textContent.includes('opportunity'))"),'unsafe v2 import rejected');await ready();
@@ -207,7 +219,7 @@ export async function verifyStudy(h) {
   await closeApplication();await launch();
   const reopened=await workspace();assert.equal(reopened.progress.wallet_bc,4);assert.equal(reopened.study.assignments.length,4);
   assert.deepEqual(reopened.study.outcomes,complete.study.outcomes);assert.deepEqual(reopened.progress,complete.progress);
-  checks.push('Native v3 export/empty restore/exact re-export/offline restart preserve frozen allocation, missing assigned opportunities, corrections and retained H1 progress without reminting; unsafe v2 and malformed hash imports are rejected');
+  checks.push('Native v4 export/empty restore/exact re-export/offline restart preserve frozen allocation, missing assigned opportunities, corrections and retained H1 progress without reminting; unsafe v2 and malformed hash imports are rejected');
   await screenshot('study-final.png');
 
   // Exercise saturation using actual synthetic evidence/acceptance commands,
