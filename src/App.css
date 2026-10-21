@@ -117,6 +117,23 @@ thead { background: #f4f6f4; }
 .numeric-progress { font-weight: 600; }
 .world-panel h2 { font-size: 1.2rem; }
 .study-context-label { border-left: 3px solid #88713d; padding-left: 12px; }
+.last-confirmed { font-size: .85rem; margin: 12px 0; }
+.work-actions { margin: 20px 0 14px; }
+.daily-work summary, .objective-manager summary { color: #215e58; cursor: pointer; font-weight: 600; }
+.initiation-support, .checkpoint-history { margin-top: 18px; }
+.initiation-support[open] > summary, .checkpoint-history[open] > summary { margin-bottom: 16px; }
+.initiation-support form, .priority-choice, .smaller-entry { margin-top: 16px; padding: 16px; border: 1px solid #cdd9d6; border-radius: 6px; }
+.checkpoint-editor { margin-top: 24px; border-top: 1px solid #cdd9d6; padding-top: 20px; }
+.checkpoint-editor input, .checkpoint-editor textarea, .initiation-support input { margin-bottom: 12px; }
+.checkpoint-editor details { margin: 8px 0 18px; }
+.checkpoint-history ol, .objective-manager ol { padding-left: 24px; }
+.checkpoint-history li, .objective-manager li { padding: 16px 0; overflow-wrap: anywhere; }
+.checkpoint-history li p, .objective-manager li p { margin-bottom: 8px; }
+.objective-manager { margin: 4px 0 24px; border: 1px solid #cdd9d6; border-radius: 8px; padding: 16px 20px; background: white; }
+.objective-manager[open] > summary { margin-bottom: 16px; }
+.objective-manager section { margin-top: 16px; }
+.objective-manager li:focus-visible { outline: 3px solid #1d7189; outline-offset: 3px; }
+.backup-panel { margin-top: 24px; padding-top: 16px; border-top: 1px solid #cdd9d6; }
 @media (max-width: 600px) {
   .work-shell { padding: 24px 16px; }
   .work-panel, .editor-panel, .progress-panel { padding: 22px 18px; }

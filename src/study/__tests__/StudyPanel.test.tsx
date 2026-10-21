@@ -11,7 +11,7 @@ import { E01_ACKNOWLEDGEMENTS } from "../StudySettings";
 import { manifest, opportunity, outcome, studyWorkspace } from "./fixtures";
 import { localDateTime } from "../fields";
 
-vi.mock("../../platform/client", async (load) => ({ ...await load<typeof api>(), planOpportunity: vi.fn(), recordOpportunityOutcome: vi.fn(), transitionStudy: vi.fn(), configureStudy: vi.fn(), createScheduleEpoch: vi.fn(), recordStudyBurden: vi.fn(), recordStudyReflection: vi.fn(), recordStudyExposure: vi.fn() }));
+vi.mock("../../platform/client", async (load) => ({ ...await load<typeof api>(), planOrdinaryOpportunity: vi.fn(), planOpportunity: vi.fn(), recordOpportunityOutcome: vi.fn(), transitionStudy: vi.fn(), configureStudy: vi.fn(), createScheduleEpoch: vi.fn(), recordStudyBurden: vi.fn(), recordStudyReflection: vi.fn(), recordStudyExposure: vi.fn() }));
 const mutation = vi.fn(async (task: () => Promise<api.Workspace>) => { try { await task(); return true; } catch { return false; } });
 const onDirtyChange = vi.fn();
 async function panel(workspace = studyWorkspace) { render(<StudyPanel workspace={workspace} objective={workspace.objectives[0]} busy={false} onMutation={mutation} onDirtyChange={onDirtyChange} />); await userEvent.click(screen.getByText(/Work opportunities/)); }
@@ -22,9 +22,30 @@ describe("optional opportunity workflow", () => {
     render(<StudyPanel workspace={studyWorkspace} objective={studyWorkspace.objectives[0]} busy={false} onMutation={mutation} onDirtyChange={onDirtyChange} />);
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument(); expect(api.planOpportunity).not.toHaveBeenCalled(); expect(api.transitionStudy).not.toHaveBeenCalled(); expect(api.recordOpportunityOutcome).not.toHaveBeenCalled();
   });
-  it("prefills the saved action, locks prospective context, and preserves failed drafts", async () => {
+  it("plans ordinary work without a manually configured epoch or experiment", async () => {
+    vi.mocked(api.planOrdinaryOpportunity).mockResolvedValue(studyWorkspace);
+    const user = userEvent.setup(); await panel({ ...studyWorkspace, study: { ...studyWorkspace.study, epochs: [], manifests: [], opportunities: [] } });
+    await user.click(screen.getByRole("button", { name: "Plan an opportunity" }));
+    expect(screen.queryByLabelText("Schedule epoch")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Confirm opportunity" }));
+    expect(api.planOrdinaryOpportunity).toHaveBeenCalledWith(expect.objectContaining({ objective_id: opportunity.objective_id, meaningful_start: "Sketch the bed on paper", available_minutes: 30 }));
+    expect(api.createScheduleEpoch).not.toHaveBeenCalled(); expect(api.configureStudy).not.toHaveBeenCalled(); expect(api.planOpportunity).not.toHaveBeenCalled();
+  });
+  it("defaults to ordinary work even during an active protocol and retains a failed draft", async () => {
+    vi.mocked(api.planOrdinaryOpportunity).mockRejectedValueOnce(new Error("not confirmed"));
     const user = userEvent.setup(); await panel(); await user.click(screen.getByRole("button", { name: "Plan an opportunity" }));
+    await user.click(screen.getByRole("button", { name: "Confirm opportunity" }));
+    expect(screen.getByLabelText("What observable first action will count as a meaningful start?")).toHaveValue("Sketch the bed on paper"); expect(api.planOrdinaryOpportunity).toHaveBeenCalledTimes(1); expect(api.planOpportunity).not.toHaveBeenCalled(); expect(api.transitionStudy).not.toHaveBeenCalled();
+  });
+  it("keeps advanced planning ordinary until a study is explicitly selected", async () => {
+    const user = userEvent.setup(); await panel(); await user.click(screen.getByRole("button", { name: "Plan an opportunity" })); await user.click(screen.getByRole("button", { name: "Advanced schedule and study options" }));
+    expect(screen.getByText(/Logging context: Ordinary use outside a study/)).toBeVisible(); await user.click(screen.getByRole("button", { name: "Confirm opportunity" }));
+    expect(api.planOpportunity).toHaveBeenCalledWith(expect.objectContaining({ manifest_id: null })); expect(api.transitionStudy).not.toHaveBeenCalled();
+  });
+  it("prefills the saved action, locks prospective context, and preserves failed drafts", async () => {
+    const user = userEvent.setup(); await panel(); await user.click(screen.getByRole("button", { name: "Plan an opportunity" })); await user.click(screen.getByRole("button", { name: "Advanced schedule and study options" }));
     const definition = screen.getByLabelText("What observable first action will count as a meaningful start?"); expect(definition).toHaveValue("Sketch the bed on paper"); expect(definition).toHaveFocus();
+    await user.click(screen.getByText("Schedule, study, and optional context")); await user.selectOptions(screen.getByLabelText("Logging context"), manifest.id);
     await user.clear(definition); await user.type(definition, "Mark and name the first planting position");
     const cue = localDateTime(new Date(Date.now() + 3600_000)); fireEvent.change(screen.getByLabelText("Available work time"), { target: { value: cue } });
     vi.mocked(api.planOpportunity).mockRejectedValueOnce({ code: "busy", message: "Try again" });
@@ -34,7 +55,7 @@ describe("optional opportunity workflow", () => {
     await user.click(screen.getByRole("button", { name: "Confirm opportunity" })); expect(screen.queryByLabelText("Available work time")).not.toBeInTheDocument();
   });
   it("allows planned rest with a prospective unavailability reason without negative outcomes", async () => {
-    const user = userEvent.setup(); await panel(); await user.click(screen.getByRole("button", { name: "Plan an opportunity" }));
+    const user = userEvent.setup(); await panel(); await user.click(screen.getByRole("button", { name: "Plan an opportunity" })); await user.click(screen.getByRole("button", { name: "Advanced schedule and study options" }));
     await user.click(screen.getByLabelText("I have available time and intend to attempt this work."));
     await user.click(screen.getByRole("button", { name: "Confirm opportunity" })); expect(screen.getByRole("alert")).toHaveTextContent("known unavailability");
     await user.type(screen.getByLabelText("Known unavailability"), "Planned rest"); await user.click(screen.getByRole("button", { name: "Confirm opportunity" }));

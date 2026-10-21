@@ -16,6 +16,20 @@ export interface Workspace {
   progress: ProgressState;
   study: StudyView;
   world: WorldState;
+  daily: DailyState;
+}
+export type ObjectiveStatus = "active" | "paused" | "archived";
+export interface ObjectiveOrganization { objective_id: string; status: ObjectiveStatus; priority: number; revision: number; updated_at: string }
+export interface WorkCheckpoint {
+  id: string; command_id: string; sequence: number; objective_id: string; note: string; reference: string | null;
+  provenance: "self_report"; recorded_at: string; description: string; stop_condition: string;
+  action_id: string; action_revision: number; resumption_note: string | null; supersedes: string | null; correction_reason: string | null;
+}
+export interface DailyState { objectives: ObjectiveOrganization[]; checkpoints: WorkCheckpoint[]; commands: { id: string; digest: string; input: RecordCheckpointInput; checkpoint_id: string }[] }
+export interface RecordCheckpointInput {
+  expected_generation: string; command_id: string; objective_id: string; note: string; reference: string | null;
+  description: string; stop_condition: string; resumption_note: string | null;
+  supersedes: string | null; correction_reason: string | null;
 }
 export type EvidencePolicy = "user_attestation" | "referenced_evidence" | "trusted_validation";
 export type Assistance = "none" | "assisted" | "generated";
@@ -61,8 +75,9 @@ export interface ProgressState {
   grants: RewardGrant[]; ledger: LedgerEntry[]; audit: AuditEvent[]; commands: CommittedCommand[]; wallet_bc: number;
 }
 export interface SettlementResult { acceptance_id: string; grant_id: string | null; issued_bc: number; balance_bc: number; retained_reward: boolean }
-export interface RecordCounts { projects: number; objectives: number; actions: number; notes: number; criteria: number; evidence: number; snapshots: number; acceptances: number; corrections: number; grants: number; ledger: number; commands: number; wallet_bc: number; opportunities: number; assignments: number; outcome_events: number; study_manifests: number; schedule_epochs: number; exposures: number; burdens: number; reflections: number; world_commands: number; world_spends: number; world_buildings: number; world_reserved_bc: number; world_spent_bc: number; world_funded_sites: number; world_endings: number }
+export interface RecordCounts { projects: number; objectives: number; actions: number; notes: number; criteria: number; evidence: number; snapshots: number; acceptances: number; corrections: number; grants: number; ledger: number; commands: number; wallet_bc: number; opportunities: number; assignments: number; outcome_events: number; study_manifests: number; schedule_epochs: number; exposures: number; burdens: number; reflections: number; world_commands: number; world_spends: number; world_buildings: number; world_reserved_bc: number; world_spent_bc: number; world_funded_sites: number; world_endings: number; objective_planning: number; checkpoints: number; checkpoint_commands: number }
 export interface ExportResult { file_name: string }
+export interface BackupStatus { state: "checking" | "idle" | "running" | "ready" | "warning"; latest_successful_day: string | null; snapshot_count: number; warning: string | null }
 export interface ImportPreview {
   token: string;
   generation: string;
@@ -116,7 +131,14 @@ export const createObjective = (input: ObjectiveInput) => command<Workspace>("cr
 export const updateObjective = (input: GenerationInput & { id: string; title: string; criterion: string }) => command<Workspace>("update_objective", input);
 export const selectObjective = (input: GenerationInput & { id: string | null }) => command<Workspace>("select_objective", input);
 export const saveWork = (input: SaveWorkInput) => command<Workspace>("save_work", input);
+export const setObjectiveStatus = (input: GenerationInput & { objective_id: string; status: ObjectiveStatus }) => command<Workspace>("set_objective_status", input);
+export const reorderObjectives = (input: GenerationInput & { objective_ids: string[] }) => command<Workspace>("reorder_objectives", input);
+export const recordCheckpoint = (input: RecordCheckpointInput) => command<{ workspace: Workspace; checkpoint: WorkCheckpoint }>("record_checkpoint", input);
 export const exportWorkspace = () => command<ExportResult | null>("export_workspace");
+export const backupStatus = () => command<BackupStatus>("backup_status");
+export const retryBackup = () => command<BackupStatus>("retry_backup");
+export const previewRecovery = () => command<ImportPreview | null>("preview_recovery");
+export const exportRecovery = () => command<ExportResult | null>("export_recovery");
 export const previewImport = () => command<ImportPreview | null>("preview_import");
 export const restoreImport = (input: { token: string; expected_generation: string }) => command<RestoreResult>("restore_import", input);
 export const saveCriterion = (input: SaveCriterionInput) => command<Workspace>("save_criterion", input);
@@ -188,6 +210,7 @@ export const createScheduleEpoch = (input: CreateScheduleEpochInput) => command<
 export const configureStudy = (input: ConfigureStudyInput) => command<Workspace>("configure_study", input);
 export const transitionStudy = (input: TransitionStudyInput) => command<Workspace>("transition_study", input);
 export const planOpportunity = (input: PlanOpportunityInput) => command<Workspace>("plan_opportunity", input);
+export const planOrdinaryOpportunity = (input: GenerationInput & { objective_id: string; meaningful_start: string; cue_at: string; timezone: string; available_minutes: number }) => command<Workspace>("plan_ordinary_opportunity", input);
 export const recordOpportunityOutcome = (input: RecordOpportunityOutcomeInput) => command<Workspace>("record_opportunity_outcome", input);
 export const recordStudyExposure = (input: RecordStudyExposureInput) => command<Workspace>("record_study_exposure", input);
 export const recordStudyBurden = (input: RecordStudyBurdenInput) => command<Workspace>("record_study_burden", input);
