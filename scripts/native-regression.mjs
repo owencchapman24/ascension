@@ -14,6 +14,7 @@ import { verifyOffline } from './native-offline.mjs';
 import { verifyProgress } from './native-progress.mjs';
 import { verifyStudy } from './native-study.mjs';
 import { verifyWorld } from './native-world.mjs';
+import { verifyDaily } from './native-daily.mjs';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const root = path.resolve(process.argv[2] ?? '');
@@ -109,16 +110,17 @@ function portableStudy(value) {
   assert.equal(study.manifests.length, 0, 'Use complete exports for study-history comparisons');
   return study;
 }
-const recordSet = value => ({ format: 'ascension-records', schema_version: 4,
+const recordSet = value => ({ format: 'ascension-records', schema_version: 5,
   selected_objective_id: value.selected_objective_id,
   ...Object.fromEntries(['projects', 'objectives', 'actions', 'notes'].map(key => [key, [...value[key]].sort((a, b) => a.id.localeCompare(b.id))])),
-  progress: value.progress, study: portableStudy(value.study), world: value.world });
+  progress: value.progress, study: portableStudy(value.study), world: value.world, daily: value.daily });
 const counts = value => [...['projects', 'objectives', 'actions', 'notes'].map(key => value[key].length),
   ...['criteria', 'evidence', 'snapshots', 'acceptances', 'corrections', 'grants', 'ledger', 'commands'].map(key => value.progress[key].length), value.progress.wallet_bc,
   ...['epochs','manifests','opportunities','assignments','outcomes','exposures','burdens','reflections'].map(key=>value.study[key].length),
   value.world.commands.length, value.world.spending.length, value.world.chapter?.layout.length ?? 0,
   value.world.chapter?.queue?.reserved_bc ?? 0, value.world.spending.reduce((sum,row)=>sum+row.amount_bc,0),
-  value.world.chapter?.funded_site_count ?? 0, value.world.chapter?.completion ? 1 : 0];
+  value.world.chapter?.funded_site_count ?? 0, value.world.chapter?.completion ? 1 : 0,
+  value.daily.objectives.length, value.daily.checkpoints.length, value.daily.commands.length];
 const emptyProgress = () => ({registry_revision:0,parents:[],slots:[],criteria:[],evidence:[],validators:[],snapshots:[],acceptances:[],corrections:[],grants:[],ledger:[],audit:[],commands:[],wallet_bc:0});
 const backupsRoot = path.join(root, 'profile', 'backups');
 async function backups() {
@@ -167,8 +169,9 @@ async function key(key, code, windowsVirtualKeyCode, modifiers = 0) {
 const tab = () => key('Tab', 'Tab', 9);
 const enter = () => key('Enter', 'Enter', 13);
 async function clickButton(name) {
+  await until(() => evaluate(`Array.from(document.querySelectorAll('button')).some(e => e.textContent.trim() === ${js(name)} && !e.matches(':disabled') && e.getClientRects().length > 0)`), `visible enabled button: ${name}`);
   const point = await evaluate(`(() => {
-    const matches = Array.from(document.querySelectorAll('button')).filter(e => e.textContent.trim() === ${js(name)} && !e.matches(':disabled'));
+    const matches = Array.from(document.querySelectorAll('button')).filter(e => e.textContent.trim() === ${js(name)} && !e.matches(':disabled') && e.getClientRects().length > 0);
     if (matches.length !== 1) throw new Error('Expected one enabled button');
     matches[0].scrollIntoView({block:'center'});
     const rect = matches[0].getBoundingClientRect(); return {x:rect.x + rect.width/2,y:rect.y + rect.height/2};
@@ -202,7 +205,7 @@ async function resizeWindow(width, height) {
   });
   await until(() => evaluate(`window.outerWidth <= ${width} && window.innerWidth > 0`), 'native window resize');
 }
-async function launch() {
+async function launch(expectStorageFailure = false) {
   const launchedAt = performance.now();
   const port = await freePort();
   const environment = Object.fromEntries(Object.entries(process.env)
@@ -219,8 +222,10 @@ async function launch() {
     return pages.find(item => item.type === 'page' && item.url === 'http://tauri.localhost/');
   }, 'installed app WebView2', 45000);
   client = await connect(page.webSocketDebuggerUrl);
-  await until(() => evaluate("document.querySelector('#work-heading')?.textContent === 'Work'"), 'Rust-backed Work view');
-  startup.push({installed_process_to_work_ms:Number((performance.now()-launchedAt).toFixed(2))});
+  await until(() => evaluate(expectStorageFailure
+    ? "Array.from(document.querySelectorAll('button')).some(e=>e.textContent==='Export recovery copy') && !!document.querySelector('[role=alert]')"
+    : "document.querySelector('#work-heading')?.textContent === 'Work'"), expectStorageFailure ? 'visible storage failure and recovery' : 'Rust-backed Work view');
+  if (!expectStorageFailure) startup.push({installed_process_to_work_ms:Number((performance.now()-launchedAt).toFixed(2))});
   assert.equal(await evaluate("window.__TAURI_INTERNALS__.invoke('plugin:app|identifier')"), config.identifier);
   const actualDataPath = await evaluate("window.__TAURI_INTERNALS__.invoke('plugin:path|resolve_directory', {directory:14})");
   assert.equal(path.resolve(actualDataPath).toLowerCase(), path.join(root, 'profile').toLowerCase(), 'Actual native app-data path must be isolated');
@@ -228,6 +233,11 @@ async function launch() {
     `$items = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = ${application.pid}"); if (!$items.Count) { throw 'WebView2 child missing' }; $text = ($items | ForEach-Object { $_.CommandLine }) -join ' '; [bool]($text.Contains('--proxy-server=http://127.0.0.1:9') -and $text.Contains('tauri.localhost;ipc.localhost'))`],
   { windowsHide: true, encoding: 'utf8' }).trim();
   assert.equal(args, 'True', 'Verify offline proxy flags on actual child process');
+  if (expectStorageFailure) {
+    assert.equal(await evaluate("window.__TAURI_INTERNALS__.invoke('load_workspace').then(()=>false,()=>true)"),true);
+    checks.push('Invalid disposable primary produces a visible error and recovery export without automatic replacement; isolated profile and refused proxy verified');
+    return;
+  }
   const evidence = await verifyOffline(client);
   offline.push(evidence);
   assert.ok(evidence.supported || (evidence.restoredOnlineMode && evidence.restoredApplication && evidence.restoredWorkspaceUnchanged), 'Unsupported offline emulation must restore the original application and workspace safely');
@@ -414,7 +424,7 @@ try {
     ['unsupported.json', JSON.stringify({ ...original, schema_version: 99 }), 'not supported'],
     ['conflicting-ids.json', JSON.stringify({ ...original, notes: [{ ...original.notes[0], id: original.actions[0].id }] }), 'unique'],
     ['dangling-reference.json', JSON.stringify({ ...original, objectives: [{ ...original.objectives[0], project_id: original.actions[0].id }] }), 'missing project'],
-    ['oversized.json', ' '.repeat(10 * 1024 * 1024 + 1), '10 MiB'],
+    ['oversized.json', ' '.repeat(12 * 1024 * 1024 + 1), '12 MiB'],
   ];
   for (const [name, contents, expectedError] of invalid) {
     const target = path.join(root, name);
@@ -464,7 +474,7 @@ try {
   assert.equal((await backups()).length, 3);
   checks.push('Failed import backup preserves exact local state; repairing only the disposable fixture allows fresh native preview/restore');
 
-  const empty = { ...original, selected_objective_id: null, projects: [], objectives: [], actions: [], notes: [], progress:emptyProgress() };
+  const empty = { ...original, selected_objective_id: null, projects: [], objectives: [], actions: [], notes: [], progress:emptyProgress(), daily:{objectives:[],checkpoints:[],commands:[]} };
   const emptyPath = path.join(root, 'empty.json');
   await writeFile(emptyPath, JSON.stringify(empty), 'utf8');
   await restoreFile(emptyPath, await workspace(), empty);
@@ -495,6 +505,8 @@ try {
     nativeDialog,ready,closeApplication,launch,checks});
   await verifyWorld({evaluate,clientSend:(...args)=>client.send(...args),clickButton,typeAt,workspace,until,notice,root,exportFile,previewFile,
     nativeDialog,ready,closeApplication,launch,checks,key,resizeWindow});
+  await verifyDaily({evaluate,clientSend:(...args)=>client.send(...args),clickButton,typeAt,workspace,until,notice,root,exportFile,previewFile,
+    nativeDialog,ready,closeApplication,launch,checks,key,resizeWindow,backupsRoot});
   await closeApplication();
   await writeFile(path.join(root, 'native-result.json'), JSON.stringify({ passed: true, checks, dialogs, offline, startup,
     limitations: ['Offline denial is scoped to WebView2; Rust/OS-wide networking is not blocked.', 'Interruption tested before import confirmation and after acknowledged writes, not during a physical power failure.'] }, null, 2));

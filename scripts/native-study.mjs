@@ -63,8 +63,9 @@ export async function verifyStudy(h) {
   const db=new DatabaseSync(database);
   const tables=['world_commands','world_spending','world_chapter','presentation_preferences','study_reflections','study_burdens','study_exposures','opportunity_outcomes','study_assignments','work_opportunities','study_protocol_events','study_manifests','schedule_epochs'];
   try {
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version,5);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version,6);
     db.exec('PRAGMA foreign_keys=ON;BEGIN IMMEDIATE');
+    for(const table of ['checkpoint_commands','work_checkpoints','objective_planning']) db.exec(`DROP TABLE ${table}`);
     for(const table of tables) {
       const exists=db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table);
       if(exists){assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n,0);db.exec(`DROP TABLE ${table}`);}
@@ -75,7 +76,7 @@ export async function verifyStudy(h) {
   const migrated=await workspace();
   for(const key of ['projects','objectives','actions','notes','progress'])assert.deepEqual(migrated[key],beforeMigration[key]);
   assert.equal(migrated.study.opportunities.length,0);assert.equal(migrated.study.manifests.length,0);
-  const backupNames=(await readdir(path.join(root,'profile','backups'))).filter(n=>n.endsWith('.sqlite3'));
+  const backupNames=(await readdir(path.join(root,'profile','backups'))).filter(n=>n.startsWith('before-migration-')&&n.endsWith('.sqlite3'));
   assert.equal(backupNames.length,1);
   const backup=new DatabaseSync(path.join(root,'profile','backups',backupNames[0]),{readOnly:true});
   try{assert.equal(backup.prepare('PRAGMA user_version').get().user_version,3);assert.equal(backup.prepare('SELECT SUM(amount_bc) AS bc FROM ledger_entries').get().bc,4);}finally{backup.close();}
@@ -91,12 +92,18 @@ export async function verifyStudy(h) {
   assert.equal(await evaluate("document.querySelector('.river-reach')"),null);
   await clickButton('Work');
   await clickButton('Plan an opportunity');
+  await clickButton('Advanced schedule and study options');
+  await openSummary('Schedule, study, and optional context');
+  const activeE00=(await workspace()).study.manifests.find(m=>m.phase==='e00'&&m.status==='active');
+  await evaluate(`(()=>{const e=document.getElementById('opportunity-study');e.value=${JSON.stringify(activeE00.id)};e.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+  await until(()=>evaluate(`document.getElementById('opportunity-study')?.value===${JSON.stringify(activeE00.id)}`),'explicit E00 logging context');
   await input('opportunity-start','Inspect the synthetic example and document one testable finding.');
   await clickButton('Confirm opportunity');await notice('Opportunity saved');
   const planned=await workspace();const first=planned.study.opportunities[0];
   assert.equal(first.action_snapshot,planned.actions.find(a=>a.objective_id===first.objective_id).description);
   assert.equal(first.meaningful_start,'Inspect the synthetic example and document one testable finding.');
   assert.equal(first.outcome_state,'pending');assert.equal(planned.study.assignments.length,0);
+  assert.equal(first.manifest_id,activeE00.id);
   assert.deepEqual(planned.progress,migrated.progress);
   await closeApplication();await launch();
   assert.deepEqual((await workspace()).study.opportunities,planned.study.opportunities);
@@ -201,10 +208,10 @@ export async function verifyStudy(h) {
   assert.equal(current.study.assignments.length,4);
   assert.equal(current.study.outcomes.find(e=>e.opportunity_id===interrupted).latency_seconds,null);
   const complete=await exportFile('study-complete.json');
-  const legacy={...complete,schema_version:2};delete legacy.study;delete legacy.world;
+  const legacy={...complete,schema_version:2};delete legacy.study;delete legacy.world;delete legacy.daily;
   const legacyPath=path.join(root,'unsafe-stage3b.json');await writeFile(legacyPath,JSON.stringify(legacy));
   await clickButton('Import records');nativeDialog('Preview an Ascension export','Select',legacyPath);
-  await until(()=>evaluate("Array.from(document.querySelectorAll('[role=alert]')).some(e=>e.textContent.includes('study history')||e.textContent.includes('opportunity'))"),'unsafe v2 import rejected');await ready();
+  await until(()=>evaluate("Array.from(document.querySelectorAll('[role=alert]')).some(e=>/study history|opportunity/.test(e.textContent))"),'unsafe v2 import rejected');await ready();
   assert.deepEqual((await workspace()).progress,current.progress);assert.equal((await workspace()).study.assignments.length,4);
   const broken=structuredClone(complete);broken.study.manifests.find(m=>m.id===e01.id).allocation_hash='0'.repeat(64);
   const brokenPath=path.join(root,'broken-study.json');await writeFile(brokenPath,JSON.stringify(broken));
@@ -212,6 +219,7 @@ export async function verifyStudy(h) {
   await until(()=>evaluate("document.querySelector('[role=alert]')!==null"),'malformed study rejected');await ready();
   assert.equal((await workspace()).study.assignments.length,4);
   const empty=structuredClone(complete);empty.selected_objective_id=null;for(const key of ['projects','objectives','actions','notes'])empty[key]=[];
+  empty.daily={objectives:[],checkpoints:[],commands:[]};
   empty.progress={registry_revision:0,parents:[],slots:[],criteria:[],evidence:[],validators:[],snapshots:[],acceptances:[],corrections:[],grants:[],ledger:[],audit:[],commands:[],wallet_bc:0};
   for(const key of Object.keys(empty.study))if(Array.isArray(empty.study[key]))empty.study[key]=[];
   await restore(empty,'study-empty.json');await restore(complete,'study-restored.json');
@@ -219,7 +227,7 @@ export async function verifyStudy(h) {
   await closeApplication();await launch();
   const reopened=await workspace();assert.equal(reopened.progress.wallet_bc,4);assert.equal(reopened.study.assignments.length,4);
   assert.deepEqual(reopened.study.outcomes,complete.study.outcomes);assert.deepEqual(reopened.progress,complete.progress);
-  checks.push('Native v4 export/empty restore/exact re-export/offline restart preserve frozen allocation, missing assigned opportunities, corrections and retained H1 progress without reminting; unsafe v2 and malformed hash imports are rejected');
+  checks.push('Native complete export/empty restore/exact re-export/offline restart preserve frozen allocation, missing assigned opportunities, corrections and retained H1 progress without reminting; unsafe v2 and malformed hash imports are rejected');
   await screenshot('study-final.png');
 
   // Exercise saturation using actual synthetic evidence/acceptance commands,

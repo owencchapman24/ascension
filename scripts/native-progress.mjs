@@ -91,13 +91,13 @@ export async function verifyProgress(h) {
   const full=await exportFile('stage3b-complete.json');
   assert.deepEqual(full,recordSet(reaccepted));
   const legacyPath=path.join(root,'unsafe-legacy.json');
-  const {progress:_progress,study:_study,world:_world,...legacyWork}=full;
+  const {progress:_progress,study:_study,world:_world,daily:_daily,...legacyWork}=full;
   await writeFile(legacyPath,JSON.stringify({...legacyWork,schema_version:1}));
   await clickButton('Import records'); nativeDialog('Preview an Ascension export','Select',legacyPath);
   await until(()=>evaluate("Array.from(document.querySelectorAll('[role=alert]')).some(e=>e.textContent.includes('cannot replace earned reward history'))"),'unsafe legacy import rejected');
   await ready(); assert.deepEqual(await workspace(),reaccepted);
   checks.push('Actual Windows Open dialog rejects a legacy file that would erase earned history, without state changes');
-  const empty={...full,selected_objective_id:null,projects:[],objectives:[],actions:[],notes:[],progress:emptyProgress()};
+  const empty={...full,selected_objective_id:null,projects:[],objectives:[],actions:[],notes:[],progress:emptyProgress(),daily:{objectives:[],checkpoints:[],commands:[]}};
   const emptyPath=path.join(root,'stage3b-empty.json'); await writeFile(emptyPath,JSON.stringify(empty));
   await restoreFile(emptyPath,reaccepted,empty);
   await restoreFile(path.join(root,'stage3b-complete.json'),await workspace(),full);

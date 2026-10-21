@@ -159,8 +159,9 @@ export async function verifyWorld(h) {
   await closeApplication();
   const database = new DatabaseSync(path.join(root, 'profile', 'ascension.sqlite3'));
   try {
-    assert.equal(database.prepare('PRAGMA user_version').get().user_version, 5);
+    assert.equal(database.prepare('PRAGMA user_version').get().user_version, 6);
     database.exec('PRAGMA foreign_keys=ON;BEGIN IMMEDIATE');
+    for (const table of ['checkpoint_commands','work_checkpoints','objective_planning']) database.exec(`DROP TABLE ${table}`);
     for (const table of ['world_commands', 'world_spending', 'world_chapter']) {
       assert.equal(database.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0);
       database.exec(`DROP TABLE ${table}`);
@@ -168,8 +169,9 @@ export async function verifyWorld(h) {
     database.exec('PRAGMA user_version=4;COMMIT');
   } finally { database.close(); }
   await launch();
-  assert.deepEqual(await workspace(), beforeMigration);
-  const addedBackups = (await readdir(backupRoot)).filter(name => name.endsWith('.sqlite3') && !priorBackups.has(name));
+  const migratedWorkspace = await workspace();
+  assert.deepEqual({...migratedWorkspace,daily:beforeMigration.daily}, beforeMigration);
+  const addedBackups = (await readdir(backupRoot)).filter(name => name.startsWith('before-migration-') && name.endsWith('.sqlite3') && !priorBackups.has(name));
   assert.equal(addedBackups.length, 1);
   const backup = new DatabaseSync(path.join(backupRoot, addedBackups[0]), { readOnly: true });
   try {
@@ -363,12 +365,12 @@ export async function verifyWorld(h) {
   checks.push('Installed factual correction retains credit, investment and Chronicle; H1 shows 24 cumulative issued units with zero available BC; keyboard layout controls/dialog focus work; actual narrow native window has no horizontal overflow');
 
   const complete = await measured('complete_export', () => exportFile('world-complete.json'));
-  const unsafe = { ...complete, schema_version: 3 }; delete unsafe.world;
+  const unsafe = { ...complete, schema_version: 3 }; delete unsafe.world; delete unsafe.daily;
   const unsafePath = path.join(root, 'world-unsafe-stage3c.json');
   await writeFile(unsafePath, JSON.stringify(unsafe));
   const beforeUnsafe = await workspace();
   await clickButton('Import records'); nativeDialog('Preview an Ascension export', 'Select', unsafePath);
-  await until(() => evaluate("document.querySelector('[role=alert]')?.textContent.includes('River Reach history')"), 'unsafe world erasure rejection');
+  await until(() => evaluate("Array.from(document.querySelectorAll('[role=alert]')).some(e=>e.textContent.includes('River Reach history'))"), 'unsafe world erasure rejection');
   await ready(); assert.deepEqual(await workspace(), beforeUnsafe);
   await restoreExact(seed, 'world-complete-empty.json');
   await restoreExact(complete, 'world-complete-restored.json');
