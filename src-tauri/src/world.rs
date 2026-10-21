@@ -1227,6 +1227,10 @@ pub(crate) fn validate(state: &WorldState, records: &RecordSet) -> Result<(), Co
         ids!(&s.reflections);
         ids!(&s.preferences);
     }
+    if let Some(daily) = &records.daily {
+        ids!(&daily.checkpoints);
+        ids!(&daily.commands);
+    }
     let mut owned = HashSet::new();
     for command in &state.commands {
         let mut created = vec![command.id.clone()];

@@ -5,6 +5,103 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 
 const BASE: &str = "2030-01-01T10:00:00.000Z";
+
+fn ordinary_input(w: &Workspace, cue: i64) -> PlanOrdinaryOpportunityInput {
+    PlanOrdinaryOpportunityInput {
+        expected_generation: w.generation.clone(),
+        objective_id: w.objectives[0].id.clone(),
+        meaningful_start: "Write the first synthetic reproduction step".into(),
+        cue_at: time(cue),
+        timezone: "Etc/UTC".into(),
+        available_minutes: 30,
+    }
+}
+
+#[test]
+fn ordinary_planning_without_setup_creates_honest_epoch_and_no_protocol_or_reward() {
+    let mut f = Fixture::new();
+    let mut records: RecordSet =
+        serde_json::from_slice(&f.service.export_bytes().unwrap()).unwrap();
+    records.study.as_mut().unwrap().epochs.clear();
+    f.restore(&serde_json::to_vec(&records).unwrap());
+    let before = f.ws();
+    assert!(before.study.epochs.is_empty());
+    let first = f
+        .service
+        .plan_ordinary_opportunity(ordinary_input(&before, 120))
+        .unwrap();
+    assert_eq!(first.study.epochs.len(), 1);
+    assert_eq!(first.study.epochs[0].effective_from, time(0));
+    assert_eq!(first.study.epochs[0].created_at, time(0));
+    let opportunity = &first.study.opportunities[0];
+    assert_eq!(opportunity.created_at, time(0));
+    assert_eq!(opportunity.cue_at, time(120));
+    assert_eq!(opportunity.action_snapshot, before.actions[0].description);
+    assert!(opportunity.manifest_id.is_none());
+    assert!(opportunity.protocol_event_id.is_none());
+    assert!(first.study.manifests.is_empty());
+    assert!(first.study.assignments.is_empty());
+    assert_eq!(first.progress, before.progress);
+    assert_eq!(first.world, before.world);
+    let second = f
+        .service
+        .plan_ordinary_opportunity(ordinary_input(&first, 300))
+        .unwrap();
+    assert_eq!(second.study.epochs, first.study.epochs);
+    f.service = WorkspaceService::open(&f.db, &f.backups).unwrap();
+    assert_eq!(f.ws(), second);
+}
+
+#[test]
+fn ordinary_planning_does_not_pause_active_e01_or_consume_its_frozen_sequence() {
+    let mut f = Fixture::new();
+    let protocol = f.protocol(Phase::E01);
+    f.plan(180, Some(&protocol));
+    let before = f.ws();
+    let after = f
+        .service
+        .plan_ordinary_opportunity(ordinary_input(&before, 240))
+        .unwrap();
+    assert_eq!(after.study.status(&protocol), StudyStatus::Active);
+    assert_eq!(after.study.manifests, before.study.manifests);
+    assert_eq!(after.study.protocol_events, before.study.protocol_events);
+    assert_eq!(after.study.assignments, before.study.assignments);
+    assert_eq!(after.study.exposures, before.study.exposures);
+    assert_eq!(after.progress, before.progress);
+    assert_eq!(after.world, before.world);
+    assert_eq!(
+        after.study.opportunities.len(),
+        before.study.opportunities.len() + 1
+    );
+}
+
+#[test]
+fn failed_ordinary_plan_rolls_back_new_epoch_and_stale_plan_creates_nothing() {
+    let mut f = Fixture::new();
+    let before = f.ws();
+    let mut bad = ordinary_input(&before, 120);
+    bad.available_minutes = 0;
+    assert!(f.service.plan_ordinary_opportunity(bad).is_err());
+    assert_eq!(f.ws(), before);
+    let mut past = ordinary_input(&before, 0);
+    assert!(f.service.plan_ordinary_opportunity(past.clone()).is_err());
+    assert_eq!(f.ws(), before);
+    past.cue_at = time(240);
+    let after = f.service.plan_ordinary_opportunity(past.clone()).unwrap();
+    assert_eq!(
+        f.service.plan_ordinary_opportunity(past).unwrap_err().code,
+        "conflict"
+    );
+    assert_eq!(f.ws(), after);
+}
+
+#[test]
+fn simple_ordinary_input_rejects_experimental_association_fields() {
+    let input = json!({"expected_generation":new_id(),"objective_id":new_id(),
+        "meaningful_start":"Write a synthetic step","cue_at":time(120),
+        "timezone":"Etc/UTC","available_minutes":30,"manifest_id":new_id()});
+    assert!(serde_json::from_value::<PlanOrdinaryOpportunityInput>(input).is_err());
+}
 fn clock(seconds: i64) {
     TEST_CLOCK.with(|c| {
         *c.borrow_mut() = Some(
@@ -593,6 +690,7 @@ fn older_exports_cannot_erase_study_history() {
     old["schema_version"] = json!(2);
     old.as_object_mut().unwrap().remove("study");
     old.as_object_mut().unwrap().remove("world");
+    old.as_object_mut().unwrap().remove("daily");
     let old = serde_json::to_vec(&old).unwrap();
     f.plan(300, None);
     let before = f.ws();
@@ -612,6 +710,7 @@ fn legacy_v2_initializes_empty_study_state_in_compatible_workspace() {
     value["schema_version"] = json!(2);
     value.as_object_mut().unwrap().remove("study");
     value.as_object_mut().unwrap().remove("world");
+    value.as_object_mut().unwrap().remove("daily");
     let d = tempfile::tempdir().unwrap();
     let mut service =
         WorkspaceService::open(&d.path().join("db"), &d.path().join("backups")).unwrap();
@@ -720,6 +819,9 @@ fn populated_v3_migration_is_additive_and_creates_coherent_backup() {
     let c = Connection::open(&f.db).unwrap();
     c.pragma_update(None, "foreign_keys", "OFF").unwrap();
     for table in [
+        "checkpoint_commands",
+        "work_checkpoints",
+        "objective_planning",
         "world_commands",
         "world_spending",
         "world_chapter",
@@ -744,6 +846,12 @@ fn populated_v3_migration_is_additive_and_creates_coherent_backup() {
     let files: Vec<_> = std::fs::read_dir(&f.backups)
         .unwrap()
         .map(|p| p.unwrap().path())
+        .filter(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("before-migration-")
+        })
         .collect();
     assert_eq!(files.len(), 1);
     let backup = Connection::open(&files[0]).unwrap();

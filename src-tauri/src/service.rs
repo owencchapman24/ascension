@@ -188,6 +188,18 @@ impl WorkspaceService {
         self.repository.load()
     }
 
+    pub fn backup_status(&self) -> crate::backup::BackupStatus {
+        self.repository.backup_manager().status()
+    }
+    pub fn retry_backup(&self) -> crate::backup::BackupStatus {
+        self.repository.backup_manager().retry()
+    }
+    pub fn preview_recovery(&mut self) -> Result<ImportPreview, CommandError> {
+        self.discard_preview();
+        let (bytes, name) = self.repository.backup_manager().latest_export()?;
+        self.preview_import(&bytes, name)
+    }
+
     pub fn create_project(&mut self, input: CreateProjectInput) -> Result<Workspace, CommandError> {
         text(&input.title, 120, "Project title")?;
         self.repository
@@ -243,6 +255,16 @@ impl WorkspaceService {
                 let timestamp = now();
                 let id = new_id();
                 workspace.selected_objective_id = Some(id.clone());
+                workspace
+                    .daily
+                    .objectives
+                    .push(crate::daily::ObjectivePlanning {
+                        objective_id: id.clone(),
+                        status: crate::daily::ObjectiveStatus::Active,
+                        priority: workspace.daily.objectives.len() as u32,
+                        revision: 1,
+                        updated_at: timestamp.clone(),
+                    });
                 workspace.objectives.push(Objective {
                     id,
                     revision: 1,
@@ -300,6 +322,15 @@ impl WorkspaceService {
                         "The selected objective does not exist.",
                     ));
                 }
+                if input.id.as_ref().is_some_and(|id| {
+                    workspace.daily.objectives.iter().any(|o| {
+                        &o.objective_id == id && o.status != crate::daily::ObjectiveStatus::Active
+                    })
+                }) {
+                    return Err(CommandError::invalid(
+                        "Reactivate the objective before focusing it.",
+                    ));
+                }
                 if workspace.selected_objective_id == input.id {
                     return Ok(false);
                 }
@@ -318,73 +349,54 @@ impl WorkspaceService {
         }
         self.repository
             .change(&input.expected_generation, |workspace| {
-                if !workspace
-                    .objectives
-                    .iter()
-                    .any(|objective| objective.id == input.objective_id)
-                {
-                    return Err(CommandError::invalid("The objective does not exist."));
-                }
-                let mut changed = false;
-                let timestamp = now();
-                if let Some(action) = workspace
-                    .actions
-                    .iter_mut()
-                    .find(|action| action.objective_id == input.objective_id)
-                {
-                    if action.description != input.description
-                        || action.stop_condition != input.stop_condition
-                    {
-                        action.revision = next_revision(action.revision)?;
-                        action.description = input.description;
-                        action.stop_condition = input.stop_condition;
-                        action.updated_at = timestamp.clone();
-                        changed = true;
-                    }
-                } else {
-                    workspace.actions.push(NextAction {
-                        id: new_id(),
-                        revision: 1,
-                        created_at: timestamp.clone(),
-                        updated_at: timestamp.clone(),
-                        objective_id: input.objective_id.clone(),
-                        description: input.description,
-                        stop_condition: input.stop_condition,
-                    });
-                    changed = true;
-                }
-                if let Some(note_text) = note_text {
-                    if let Some(note) = workspace
-                        .notes
-                        .iter_mut()
-                        .find(|note| note.objective_id == input.objective_id)
-                    {
-                        if note.text != note_text {
-                            note.revision = next_revision(note.revision)?;
-                            note.text = note_text;
-                            note.updated_at = timestamp;
-                            changed = true;
-                        }
-                    } else {
-                        workspace.notes.push(ResumptionNote {
-                            id: new_id(),
-                            revision: 1,
-                            created_at: timestamp.clone(),
-                            updated_at: timestamp,
-                            objective_id: input.objective_id,
-                            text: note_text,
-                        });
-                        changed = true;
-                    }
-                } else {
-                    let before = workspace.notes.len();
-                    workspace
-                        .notes
-                        .retain(|note| note.objective_id != input.objective_id);
-                    changed |= before != workspace.notes.len();
-                }
-                Ok(changed)
+                apply_saved_work(
+                    workspace,
+                    &input.objective_id,
+                    input.description,
+                    input.stop_condition,
+                    note_text,
+                    &now(),
+                )
             })
+    }
+
+    pub fn set_objective_status(
+        &mut self,
+        input: crate::daily::SetObjectiveStatusInput,
+    ) -> Result<Workspace, CommandError> {
+        valid_id(&input.objective_id)?;
+        self.repository
+            .change(&input.expected_generation.clone(), |workspace| {
+                crate::daily::set_status(workspace, input)
+            })
+    }
+    pub fn reorder_objectives(
+        &mut self,
+        input: crate::daily::ReorderObjectivesInput,
+    ) -> Result<Workspace, CommandError> {
+        self.repository
+            .change(&input.expected_generation.clone(), |workspace| {
+                crate::daily::reorder(workspace, input)
+            })
+    }
+    pub fn record_checkpoint(
+        &mut self,
+        input: crate::daily::RecordCheckpointInput,
+    ) -> Result<crate::daily::CheckpointResult, CommandError> {
+        self.repository
+            .progress_change(|c| crate::daily::record(c, input))
+            .map(|(workspace, checkpoint)| crate::daily::CheckpointResult {
+                workspace,
+                checkpoint,
+            })
+    }
+    pub fn plan_ordinary_opportunity(
+        &mut self,
+        input: PlanOrdinaryOpportunityInput,
+    ) -> Result<Workspace, CommandError> {
+        self.repository
+            .progress_change(|c| study::plan_ordinary(c, input))
+            .map(|(workspace, ())| workspace)
     }
 
     pub fn export_bytes(&self) -> Result<Vec<u8>, CommandError> {
@@ -422,6 +434,12 @@ impl WorkspaceService {
                 "A legacy v1 export cannot replace earned reward history. Choose a complete Stage 3b export.",
             ));
         }
+        if source_schema < 5 && workspace.daily.has_history(&workspace.objectives) {
+            return Err(CommandError::new(
+                "unsafe_legacy_import",
+                "An older export cannot replace objective organization or checkpoint history. Choose a complete Stage 4.5 export.",
+            ));
+        }
         let token = new_id();
         let incoming_counts =
             RecordCounts::from(&records.clone().into_workspace(workspace.generation.clone()));
@@ -444,8 +462,10 @@ impl WorkspaceService {
                 "Legacy v2: complete reward history is preserved; opportunity and study fields initialize empty. Older files cannot replace any existing study history.".into()
             } else if source_schema == 3 {
                 "Legacy v3: complete reward and study history is preserved; River Reach initializes empty. Older files cannot replace any existing River Reach history or accounting.".into()
+            } else if source_schema == 4 {
+                "Legacy v4: complete reward, study and River Reach history is preserved; objectives initialize active in stable ID order and checkpoints initialize empty. Older files cannot replace changed objective organization or checkpoint history.".into()
             } else {
-                "Complete replacement includes Work, reward history, schedule epochs, frozen study protocols, assignments, outcomes and corrections, exposures, burden, reflections, construction preferences, and all River Reach construction, reservations, spending, layouts, command history, and Chronicle. History absent from this file will be removed. A complete recovery backup is saved first.".into()
+                "Complete replacement includes objective lifecycle and priority, factual checkpoints and replay identities, Work, reward history, schedule epochs, frozen study protocols, assignments, outcomes and corrections, exposures, burden, reflections, construction preferences, and all River Reach construction, reservations, spending, layouts, command history, and Chronicle. History absent from this file will be removed. A complete recovery backup is saved first.".into()
             },
         })
     }
@@ -468,6 +488,79 @@ impl WorkspaceService {
         self.pending_import = None;
         Ok(result)
     }
+}
+
+pub(crate) fn apply_saved_work(
+    workspace: &mut Workspace,
+    objective_id: &str,
+    description: String,
+    stop_condition: String,
+    note_text: Option<String>,
+    timestamp: &str,
+) -> Result<bool, CommandError> {
+    if !workspace
+        .objectives
+        .iter()
+        .any(|objective| objective.id == objective_id)
+    {
+        return Err(CommandError::invalid("The objective does not exist."));
+    }
+    let mut changed = false;
+    if let Some(action) = workspace
+        .actions
+        .iter_mut()
+        .find(|action| action.objective_id == objective_id)
+    {
+        if action.description != description || action.stop_condition != stop_condition {
+            action.revision = next_revision(action.revision)?;
+            action.description = description;
+            action.stop_condition = stop_condition;
+            action.updated_at = timestamp.to_owned();
+            changed = true;
+        }
+    } else {
+        workspace.actions.push(NextAction {
+            id: new_id(),
+            revision: 1,
+            created_at: timestamp.to_owned(),
+            updated_at: timestamp.to_owned(),
+            objective_id: objective_id.to_owned(),
+            description,
+            stop_condition,
+        });
+        changed = true;
+    }
+    if let Some(note_text) = note_text {
+        if let Some(note) = workspace
+            .notes
+            .iter_mut()
+            .find(|note| note.objective_id == objective_id)
+        {
+            if note.text != note_text {
+                note.revision = next_revision(note.revision)?;
+                note.text = note_text;
+                note.updated_at = timestamp.to_owned();
+                changed = true;
+            }
+        } else {
+            workspace.notes.push(ResumptionNote {
+                id: new_id(),
+                revision: 1,
+                created_at: timestamp.to_owned(),
+                updated_at: timestamp.to_owned(),
+                objective_id: objective_id.to_owned(),
+                text: note_text,
+            });
+            changed = true;
+        }
+    } else {
+        let before = workspace.notes.len();
+        workspace
+            .notes
+            .retain(|note| note.objective_id != objective_id);
+        changed |= before != workspace.notes.len();
+    }
+    Ok(changed)
 }
 
 #[cfg(test)]

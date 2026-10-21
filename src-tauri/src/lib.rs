@@ -1,4 +1,6 @@
+pub mod backup;
 mod commands;
+pub mod daily;
 pub mod domain;
 pub mod progress;
 pub mod service;
@@ -24,6 +26,14 @@ pub fn run() {
             commands::configure_study,
             commands::transition_study,
             commands::plan_opportunity,
+            commands::plan_ordinary_opportunity,
+            commands::set_objective_status,
+            commands::reorder_objectives,
+            commands::record_checkpoint,
+            commands::backup_status,
+            commands::retry_backup,
+            commands::preview_recovery,
+            commands::export_recovery,
             commands::record_opportunity_outcome,
             commands::record_study_exposure,
             commands::record_study_burden,

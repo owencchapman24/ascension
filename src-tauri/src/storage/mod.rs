@@ -1,5 +1,5 @@
 use crate::domain::*;
-use crate::{progress, study, world};
+use crate::{daily, progress, study, world};
 use rusqlite::{Connection, MAIN_DB, OpenFlags, TransactionBehavior, params};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -12,8 +12,11 @@ const STATE_MIGRATION: &str = include_str!("../../migrations/002_workspace_state
 const PROGRESS_MIGRATION: &str = include_str!("../../migrations/003_progress.sql");
 const STUDY_MIGRATION: &str = include_str!("../../migrations/004_study.sql");
 const WORLD_MIGRATION: &str = include_str!("../../migrations/005_world.sql");
+const DAILY_MIGRATION: &str = include_str!("../../migrations/006_daily.sql");
+pub(crate) const DB_SCHEMA_VERSION: u32 = 6;
 
 pub(crate) struct Repository {
+    backup: crate::backup::BackupManager,
     connection: Connection,
 }
 
@@ -57,7 +60,7 @@ impl Repository {
         // Inspect compatibility before any pragma that changes the existing database.
         let version: u32 =
             storage(connection.pragma_query_value(None, "user_version", |row| row.get(0)))?;
-        if version > 5 {
+        if version > DB_SCHEMA_VERSION {
             return Err(CommandError::new(
                 "unsupported_schema",
                 "This workspace was created by a newer app version. It has not been changed.",
@@ -80,18 +83,18 @@ impl Repository {
         if broken != 0 {
             return Err(CommandError::storage());
         }
-        if version < 5 {
+        if version < DB_SCHEMA_VERSION {
             let transaction =
                 storage(connection.transaction_with_behavior(TransactionBehavior::Immediate))?;
             let locked_version: u32 =
                 storage(transaction.pragma_query_value(None, "user_version", |row| row.get(0)))?;
-            if locked_version > 5 {
+            if locked_version > DB_SCHEMA_VERSION {
                 return Err(CommandError::new(
                     "unsupported_schema",
                     "This workspace was created by a newer app version. It has not been changed.",
                 ));
             }
-            if (1..5).contains(&locked_version) {
+            if (1..DB_SCHEMA_VERSION).contains(&locked_version) {
                 // A second read-only connection snapshots committed data while this
                 // connection's IMMEDIATE lock excludes other database writers.
                 let source = storage(Connection::open_with_flags(
@@ -127,12 +130,19 @@ impl Repository {
                 storage(transaction.execute_batch(WORLD_MIGRATION))?;
                 storage(transaction.pragma_update(None, "user_version", 5))?;
             }
+            if locked_version < 6 {
+                storage(transaction.execute_batch(DAILY_MIGRATION))?;
+                storage(transaction.pragma_update(None, "user_version", DB_SCHEMA_VERSION))?;
+            }
             read_workspace(&transaction)?;
             storage(transaction.commit())?;
         }
         storage(connection.pragma_update(None, "journal_mode", "WAL"))?;
         storage(connection.pragma_update(None, "synchronous", "FULL"))?;
-        let repository = Self { connection };
+        let repository = Self {
+            connection,
+            backup: crate::backup::BackupManager::new(path, backup_dir),
+        };
         repository.load()?;
         Ok(repository)
     }
@@ -143,6 +153,10 @@ impl Repository {
         let workspace = read_workspace(&transaction)?;
         storage(transaction.commit())?;
         Ok(workspace)
+    }
+
+    pub(crate) fn backup_manager(&self) -> &crate::backup::BackupManager {
+        &self.backup
     }
 
     pub(crate) fn world_view(&self) -> Result<world::WorldView, CommandError> {
@@ -171,6 +185,7 @@ impl Repository {
         F: FnOnce(&mut Workspace) -> Result<bool, CommandError>,
     {
         valid_id(expected_generation)?;
+        let before_changes = self.connection.total_changes();
         let transaction = storage(
             self.connection
                 .transaction_with_behavior(TransactionBehavior::Immediate),
@@ -183,6 +198,7 @@ impl Repository {
         if change(&mut workspace)? {
             workspace.generation = new_id();
             apply_workspace_changes(&transaction, &before, &workspace)?;
+            daily::sync(&transaction, &before.daily, &workspace.daily)?;
             progress::sync_objectives(&transaction, &before.objectives, &workspace.objectives)?;
             workspace.progress = progress::read(&transaction)?;
             let mut records = RecordSet::from(&workspace);
@@ -191,6 +207,9 @@ impl Repository {
             workspace = records.into_workspace(workspace.generation);
         }
         storage(transaction.commit())?;
+        if self.connection.total_changes() != before_changes {
+            self.backup.data_changed();
+        }
         Ok(workspace)
     }
 
@@ -203,6 +222,7 @@ impl Repository {
     where
         F: FnOnce(&Connection) -> Result<T, CommandError>,
     {
+        let before_changes = self.connection.total_changes();
         let transaction = storage(
             self.connection
                 .transaction_with_behavior(TransactionBehavior::Immediate),
@@ -211,6 +231,9 @@ impl Repository {
         let workspace = read_workspace(&transaction)?;
         validate_records(&RecordSet::from(&workspace))?;
         storage(transaction.commit())?;
+        if self.connection.total_changes() != before_changes {
+            self.backup.data_changed();
+        }
         Ok((workspace, result))
     }
 
@@ -247,6 +270,12 @@ impl Repository {
                 "A legacy v1 export cannot replace earned reward history. Choose a complete Stage 3b export.",
             ));
         }
+        if source_schema < 5 && current.daily.has_history(&current.objectives) {
+            return Err(CommandError::new(
+                "unsafe_legacy_import",
+                "An older export cannot replace objective organization or checkpoint history. Choose a complete Stage 4.5 export.",
+            ));
+        }
         validate_records(&records)?;
         if RecordSet::from(&current) == records {
             storage(transaction.commit())?;
@@ -261,6 +290,7 @@ impl Repository {
         let workspace = records.into_workspace(new_id());
         replace_workspace_for_restore(&transaction, &workspace)?;
         storage(transaction.commit())?;
+        self.backup.data_changed();
         Ok(RestoreResult {
             workspace,
             backup_created: true,
@@ -323,7 +353,7 @@ fn write_restore_backup(workspace: &Workspace, backup_dir: &Path) -> Result<(), 
         .map_err(|_| CommandError::backup())
 }
 
-fn read_workspace(connection: &Connection) -> Result<Workspace, CommandError> {
+pub(crate) fn read_workspace(connection: &Connection) -> Result<Workspace, CommandError> {
     let (generation, selected_objective_id): (String, Option<String>) =
         storage(connection.query_row(
             "SELECT generation,selected_objective_id FROM workspace_state WHERE singleton=1",
@@ -402,6 +432,7 @@ fn read_workspace(connection: &Connection) -> Result<Workspace, CommandError> {
         progress: progress::read(connection)?,
         study: study::read(connection)?,
         world: world::read(connection)?,
+        daily: daily::read(connection)?,
     };
     valid_id(&workspace.generation).map_err(|_| CommandError::storage())?;
     validate_records(&RecordSet::from(&workspace)).map_err(|_| CommandError::storage())?;
@@ -410,7 +441,7 @@ fn read_workspace(connection: &Connection) -> Result<Workspace, CommandError> {
 
 // Ordinary edits preserve rows so dependent records and their foreign keys survive.
 // The service owns transitions; this writer only persists the validated difference.
-fn apply_workspace_changes(
+pub(crate) fn apply_workspace_changes(
     connection: &Connection,
     before: &Workspace,
     after: &Workspace,
@@ -535,6 +566,7 @@ fn replace_workspace_for_restore(
     connection: &Connection,
     workspace: &Workspace,
 ) -> Result<(), CommandError> {
+    daily::clear(connection)?;
     world::clear(connection)?;
     study::clear(connection)?;
     progress::clear(connection)?;
@@ -596,6 +628,7 @@ fn replace_workspace_for_restore(
     progress::restore(connection, &workspace.progress)?;
     study::restore(connection, &workspace.study)?;
     world::restore(connection, &workspace.world)?;
+    daily::restore(connection, &workspace.daily)?;
     storage(connection.execute(
         "UPDATE workspace_state SET generation=?1,selected_objective_id=?2 WHERE singleton=1",
         params![workspace.generation, workspace.selected_objective_id],

@@ -1019,6 +1019,7 @@ fn legacy_formats_cannot_erase_world_history_and_current_restore_replays_exactly
     let mut old: Value = serde_json::from_slice(&bytes).unwrap();
     old["schema_version"] = json!(3);
     old.as_object_mut().unwrap().remove("world");
+    old.as_object_mut().unwrap().remove("daily");
     assert_eq!(
         f.service
             .preview_import(
@@ -1293,6 +1294,15 @@ fn failed_restore_backup_and_world_insertion_preserve_displaced_world_and_work()
         reserve_available: true,
     });
     let before = target.service.export_bytes().unwrap();
+    drop(target.service);
+    if target.backups.exists() {
+        std::fs::rename(
+            &target.backups,
+            target._directory.path().join("prior-backups"),
+        )
+        .unwrap();
+    }
+    target.service = WorkspaceService::open(&target.database, &target.backups).unwrap();
     std::fs::write(&target.backups, b"synthetic backup path blocker").unwrap();
     let preview = target
         .service
@@ -1343,7 +1353,14 @@ fn failed_restore_backup_and_world_insertion_preserve_displaced_world_and_work()
     }
     let backups: Vec<_> = std::fs::read_dir(&target.backups)
         .unwrap()
-        .map(|e| std::fs::read(e.unwrap().path()).unwrap())
+        .map(|e| e.unwrap().path())
+        .filter(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("before-restore-")
+        })
+        .map(|p| std::fs::read(p).unwrap())
         .collect();
     assert_eq!(backups.len(), 2);
     assert!(backups.iter().all(|bytes| bytes == &before));
