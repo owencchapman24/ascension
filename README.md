@@ -130,6 +130,6 @@ Modern imports and saved workspaces are bounded to 12 MiB and 12,500 records acr
 
 ## Repository safety and contribution scope
 
-Follow [AGENTS.md](AGENTS.md). Use synthetic records in fixtures and diagnostics. Keep personal work, credentials, database files, runtime backups, installer output, and private exports out of Git. This repository includes no CI workflow or release automation; local build commands do not push or publish anything. Scope expansion beyond Stage 4.5 requires separate owner authorization.
+Follow [AGENTS.md](AGENTS.md). Use synthetic records in fixtures and diagnostics. Keep personal work, credentials, database files, runtime backups, installer output, and private exports out of Git. The [CI setup](docs/implementation/CI_SETUP.md) defines read-only pull-request checks for the frontend and Windows Rust suites; installed Windows verification remains a separate local gate. There is no release automation, and local build commands do not push or publish anything. Product scope expansion beyond Stage 4.5 requires separate owner authorization.
 
 Development stops at Stage 4.5. Restore remains replacement-only. Full erasure requires a separately reviewed namespace/tombstone policy; archiving hides work and factual correction preserves earlier accounts. Stage 5 and real E00/E01 enrollment by the implementation agent remain unauthorized. See the [release and recovery guidance](docs/implementation/RELEASE_AND_RECOVERY.md) before any normal-profile upgrade.
