@@ -3,6 +3,9 @@ mod commands;
 pub mod daily;
 pub mod domain;
 pub mod progress;
+mod restore_diagnostics;
+#[cfg(test)]
+mod restore_stress_tests;
 pub mod service;
 mod storage;
 pub mod study;
@@ -13,6 +16,10 @@ use tauri::Manager;
 pub fn run() {
     let result = tauri::Builder::default()
         .setup(|app| {
+            restore_diagnostics::configure_native(
+                &app.config().identifier,
+                app.path().app_data_dir().ok().as_deref(),
+            );
             app.manage(commands::AppState::open(app.path().app_data_dir().ok()));
             Ok(())
         })

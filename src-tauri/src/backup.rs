@@ -39,11 +39,34 @@ pub struct BackupStatus {
     pub warning: Option<String>,
 }
 
+/// Coarse, content-free state for an explicitly enabled restore diagnostic.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum BackupPhase {
+    Idle,
+    Inventory,
+    Snapshot,
+    Retention,
+    Unknown,
+}
+
+#[derive(Clone)]
+pub(crate) struct BackupProbe(Arc<Mutex<Shared>>);
+
+impl BackupProbe {
+    pub(crate) fn phase(&self) -> BackupPhase {
+        self.0
+            .lock()
+            .map_or(BackupPhase::Unknown, |state| state.phase)
+    }
+}
+
 struct Shared {
     status: BackupStatus,
     queue: VecDeque<NaiveDate>,
     completed: HashSet<NaiveDate>,
     running: bool,
+    phase: BackupPhase,
 }
 
 // The worker owns only Shared, so dropping the manager can join it without a
@@ -77,6 +100,7 @@ impl BackupManager {
                 queue: VecDeque::new(),
                 completed: HashSet::new(),
                 running: false,
+                phase: BackupPhase::Idle,
             })),
             worker: Mutex::new(None),
         };
@@ -86,6 +110,10 @@ impl BackupManager {
 
     pub(crate) fn data_changed(&self) {
         self.request(Local::now().date_naive());
+    }
+
+    pub(crate) fn diagnostic_probe(&self) -> BackupProbe {
+        BackupProbe(Arc::clone(&self.shared))
     }
 
     pub(crate) fn status(&self) -> BackupStatus {
@@ -146,6 +174,11 @@ impl BackupManager {
             return;
         }
         shared.running = true;
+        shared.phase = if inventory {
+            BackupPhase::Inventory
+        } else {
+            BackupPhase::Snapshot
+        };
         drop(shared);
         if let Some(previous) = handle.take() {
             let _ = previous.join();
@@ -162,6 +195,7 @@ impl BackupManager {
             Err(_) => {
                 if let Ok(mut shared) = self.shared.lock() {
                     shared.running = false;
+                    shared.phase = BackupPhase::Idle;
                     shared.status.state = BackupState::Warning;
                     shared.status.warning = Some(FAILURE.into());
                 }
@@ -182,6 +216,10 @@ impl Drop for BackupManager {
 
 fn run_worker(database: &Path, directory: &Path, shared: &Mutex<Shared>, inventory: bool) {
     if inventory {
+        set_phase(shared, BackupPhase::Inventory);
+        #[cfg(test)]
+        let result = test_gate::during_inventory(database, || inventory_snapshots(directory));
+        #[cfg(not(test))]
         let result = inventory_snapshots(directory);
         if let Ok(mut state) = shared.lock() {
             match result {
@@ -207,11 +245,14 @@ fn run_worker(database: &Path, directory: &Path, shared: &Mutex<Shared>, invento
                 }
                 None => {
                     state.running = false;
+                    state.phase = BackupPhase::Idle;
                     return;
                 }
             }
         };
+        set_phase(shared, BackupPhase::Snapshot);
         let result = create_snapshot(database, directory, day).and_then(|_| {
+            set_phase(shared, BackupPhase::Retention);
             let (snapshots, unverified) = inventory_snapshots(directory)?;
             let pruning_failed = prune(&snapshots).is_err();
             let (remaining, still_unverified) = inventory_snapshots(directory)?;
@@ -227,6 +268,7 @@ fn run_worker(database: &Path, directory: &Path, shared: &Mutex<Shared>, invento
         let (snapshots, warning) = result.unwrap_or_else(|_| {
             // A failed retry may reveal that a formerly verified file is now
             // corrupt or unavailable. Refresh the claim without any pruning.
+            set_phase(shared, BackupPhase::Inventory);
             let verified = inventory_snapshots(directory)
                 .map(|(snapshots, _)| snapshots)
                 .unwrap_or_default();
@@ -235,6 +277,12 @@ fn run_worker(database: &Path, directory: &Path, shared: &Mutex<Shared>, invento
         if let Ok(mut state) = shared.lock() {
             update_status(&mut state, &snapshots, warning);
         }
+    }
+}
+
+fn set_phase(shared: &Mutex<Shared>, phase: BackupPhase) {
+    if let Ok(mut state) = shared.lock() {
+        state.phase = phase;
     }
 }
 
@@ -299,6 +347,8 @@ fn create_snapshot(database: &Path, directory: &Path, day: NaiveDate) -> Result<
             |row| row.get(0),
         )
         .map_err(|_| backup_error())?;
+    #[cfg(test)]
+    test_gate::pause(database, test_gate::Point::SnapshotPinned);
     let mut destination = Connection::open(&pending).map_err(|_| backup_error())?;
     {
         let backup = Backup::new(&transaction, &mut destination).map_err(|_| backup_error())?;
@@ -374,6 +424,8 @@ fn inspect_snapshot(path: &Path, day: NaiveDate) -> Result<(Snapshot, RecordSet)
     let version: u32 = transaction
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|_| backup_error())?;
+    #[cfg(test)]
+    test_gate::inventory_reader_pinned();
     if version != DB_SCHEMA_VERSION {
         return Err(backup_error());
     }
@@ -516,3 +568,120 @@ pub(crate) fn latest_export(directory: &Path) -> Result<(Vec<u8>, String), Comma
 #[cfg(test)]
 #[path = "backup_tests.rs"]
 mod tests;
+
+// Per-database barriers exist only in Rust tests. No command, environment option,
+// production delay, or globally paused worker is exposed to the application.
+#[cfg(test)]
+pub(crate) mod test_gate {
+    use super::*;
+    use std::sync::{Condvar, OnceLock, Weak};
+
+    thread_local! {
+        static INVENTORY_DATABASE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn during_inventory<T>(database: &Path, operation: impl FnOnce() -> T) -> T {
+        struct Reset(Option<PathBuf>);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                INVENTORY_DATABASE.with(|context| *context.borrow_mut() = self.0.take());
+            }
+        }
+        let previous = INVENTORY_DATABASE.with(|context| context.replace(Some(database.into())));
+        let _reset = Reset(previous);
+        operation()
+    }
+
+    pub(super) fn inventory_reader_pinned() {
+        let database = INVENTORY_DATABASE.with(|context| context.borrow().clone());
+        if let Some(database) = database {
+            pause(&database, Point::Inventory);
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum Point {
+        Inventory,
+        SnapshotPinned,
+    }
+
+    #[derive(Default)]
+    struct State {
+        reached: bool,
+        released: bool,
+    }
+
+    #[derive(Default)]
+    struct Barrier {
+        state: Mutex<State>,
+        condition: Condvar,
+    }
+
+    struct Registration {
+        database: PathBuf,
+        point: Point,
+        barrier: Weak<Barrier>,
+    }
+
+    fn registry() -> &'static Mutex<Vec<Registration>> {
+        static REGISTRY: OnceLock<Mutex<Vec<Registration>>> = OnceLock::new();
+        REGISTRY.get_or_init(|| Mutex::new(Vec::new()))
+    }
+
+    pub(crate) struct Gate(Arc<Barrier>);
+
+    pub(crate) fn install(database: &Path, point: Point) -> Gate {
+        let barrier = Arc::new(Barrier::default());
+        let mut entries = registry().lock().unwrap();
+        entries.retain(|entry| entry.barrier.strong_count() > 0);
+        entries.push(Registration {
+            database: database.into(),
+            point,
+            barrier: Arc::downgrade(&barrier),
+        });
+        Gate(barrier)
+    }
+
+    impl Gate {
+        pub(crate) fn wait_until_reached(&self, timeout: Duration) -> bool {
+            self.0
+                .condition
+                .wait_timeout_while(self.0.state.lock().unwrap(), timeout, |state| {
+                    !state.reached
+                })
+                .unwrap()
+                .0
+                .reached
+        }
+
+        pub(crate) fn release(&self) {
+            self.0.state.lock().unwrap().released = true;
+            self.0.condition.notify_all();
+        }
+    }
+
+    impl Drop for Gate {
+        fn drop(&mut self) {
+            self.release();
+        }
+    }
+
+    pub(super) fn pause(database: &Path, point: Point) {
+        let barrier = registry()
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|entry| entry.database == database && entry.point == point)
+            .and_then(|entry| entry.barrier.upgrade());
+        let Some(barrier) = barrier else { return };
+        let mut state = barrier.state.lock().unwrap();
+        if state.reached || state.released {
+            return;
+        }
+        state.reached = true;
+        barrier.condition.notify_all();
+        while !state.released {
+            state = barrier.condition.wait(state).unwrap();
+        }
+    }
+}

@@ -88,10 +88,12 @@ impl AppState {
         &self,
         operation: impl FnOnce(&mut WorkspaceService) -> Result<T, CommandError>,
     ) -> Result<T, CommandError> {
+        crate::restore_diagnostics::phase("service_lock");
         let mut guard = self.service.lock().map_err(|_| storage_error())?;
         // A transient startup failure must not make the UI's retry permanently fail.
         // Reuse the same guarded open path; never recreate or replace a failed database.
         if guard.is_err() {
+            crate::restore_diagnostics::phase("reopen_service");
             *guard = Self::open_service(self.data_dir.as_deref());
         }
         let service = guard.as_mut().map_err(|failure| failure.clone())?;
@@ -320,10 +322,14 @@ pub(crate) async fn restore_import(
     state: State<'_, AppState>,
     input: RestoreInput,
 ) -> Result<RestoreResult, CommandError> {
-    service_task(state.inner().clone(), move |service| {
-        service.restore_import(input)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::restore_diagnostics::attempt(|| {
+            state.with_service(|service| service.restore_import(input))
+        })
     })
     .await
+    .map_err(|_| storage_error())?
 }
 
 #[derive(Serialize)]

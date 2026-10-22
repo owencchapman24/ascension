@@ -151,7 +151,10 @@ pub(crate) fn from_legacy(objectives: &[Objective]) -> DailyState {
     }
 }
 fn db<T>(value: rusqlite::Result<T>) -> Result<T, CommandError> {
-    value.map_err(|_| CommandError::storage())
+    value.map_err(|error| {
+        crate::restore_diagnostics::sqlite(&error);
+        CommandError::storage()
+    })
 }
 fn encode<T: Serialize>(value: &T) -> Result<String, CommandError> {
     serde_json::to_string(value).map_err(|_| CommandError::storage())
@@ -171,6 +174,7 @@ fn insert<T: Serialize>(
     id: &str,
     value: &T,
 ) -> Result<(), CommandError> {
+    crate::restore_diagnostics::table_operation("insert", table);
     db(c.execute(
         &format!("INSERT INTO {table}(id,payload) VALUES(?1,?2)"),
         params![id, encode(value)?],

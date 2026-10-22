@@ -471,22 +471,28 @@ impl WorkspaceService {
     }
 
     pub fn restore_import(&mut self, input: RestoreInput) -> Result<RestoreResult, CommandError> {
-        valid_id(&input.token)?;
-        valid_id(&input.expected_generation)?;
-        let pending = self.pending_import.as_ref().ok_or_else(|| {
-            CommandError::invalid("Choose and preview an import file before restoring it.")
-        })?;
-        if pending.token != input.token || pending.generation != input.expected_generation {
-            return Err(CommandError::conflict());
-        }
-        let result = self.repository.restore(
-            &input.expected_generation,
-            pending.records.clone(),
-            &self.backup_dir,
-            pending.source_schema,
-        )?;
-        self.pending_import = None;
-        Ok(result)
+        crate::restore_diagnostics::attempt(|| {
+            crate::restore_diagnostics::attach_backup(
+                self.repository.backup_manager().diagnostic_probe(),
+            );
+            crate::restore_diagnostics::phase("validate_preview");
+            valid_id(&input.token)?;
+            valid_id(&input.expected_generation)?;
+            let pending = self.pending_import.as_ref().ok_or_else(|| {
+                CommandError::invalid("Choose and preview an import file before restoring it.")
+            })?;
+            if pending.token != input.token || pending.generation != input.expected_generation {
+                return Err(CommandError::conflict());
+            }
+            let result = self.repository.restore(
+                &input.expected_generation,
+                pending.records.clone(),
+                &self.backup_dir,
+                pending.source_schema,
+            )?;
+            self.pending_import = None;
+            Ok(result)
+        })
     }
 }
 

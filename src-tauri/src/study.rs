@@ -195,7 +195,10 @@ fn invalid(message: &str) -> CommandError {
     CommandError::invalid(message)
 }
 fn db<T>(result: rusqlite::Result<T>) -> Result<T, CommandError> {
-    result.map_err(|_| CommandError::storage())
+    result.map_err(|error| {
+        crate::restore_diagnostics::sqlite(&error);
+        CommandError::storage()
+    })
 }
 fn encode<T: Serialize>(value: &T) -> Result<String, CommandError> {
     serde_json::to_string(value).map_err(|_| CommandError::storage())
@@ -223,6 +226,7 @@ fn optional(value: &Option<String>, field: &str) -> Result<(), CommandError> {
     Ok(())
 }
 fn insert<T: Serialize>(c: &Connection, table: &str, id: &str, v: &T) -> Result<(), CommandError> {
+    crate::restore_diagnostics::table_operation("insert", table);
     db(c.execute(
         &format!("INSERT INTO {table}(id,payload) VALUES(?1,?2)"),
         params![id, encode(v)?],

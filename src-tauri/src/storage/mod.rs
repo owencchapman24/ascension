@@ -21,14 +21,17 @@ pub(crate) struct Repository {
 }
 
 fn storage<T>(result: rusqlite::Result<T>) -> Result<T, CommandError> {
-    result.map_err(|error| match error.sqlite_error_code() {
-        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => {
-            CommandError::new(
-                "busy",
-                "The local database is busy. Try again after the other operation finishes.",
-            )
+    result.map_err(|error| {
+        crate::restore_diagnostics::sqlite(&error);
+        match error.sqlite_error_code() {
+            Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => {
+                CommandError::new(
+                    "busy",
+                    "The local database is busy. Try again after the other operation finishes.",
+                )
+            }
+            _ => CommandError::storage(),
         }
-        _ => CommandError::storage(),
     })
 }
 
@@ -275,58 +278,95 @@ impl Repository {
         backup_dir: &Path,
         source_schema: u32,
     ) -> Result<RestoreResult, CommandError> {
+        use crate::restore_diagnostics as diagnostic;
+        diagnostic::phase("begin_transaction");
         let transaction = storage(
             self.connection
                 .transaction_with_behavior(TransactionBehavior::Immediate),
         )?;
-        let current = read_workspace(&transaction)?;
-        if current.generation != expected_generation {
-            return Err(CommandError::conflict());
+        diagnostic::transaction("active");
+        let replacement = (|| {
+            diagnostic::phase("read_destination");
+            let current = read_workspace(&transaction)?;
+            diagnostic::phase("validate_replacement");
+            if current.generation != expected_generation {
+                return Err(CommandError::conflict());
+            }
+            if source_schema < 4 && current.world.has_history() {
+                return Err(CommandError::new(
+                    "unsafe_legacy_import",
+                    "An older export cannot replace River Reach history or its accounting. Choose a complete Stage 4 export.",
+                ));
+            }
+            if source_schema < 3 && current.study.record_count() > 0 {
+                return Err(CommandError::new(
+                    "unsafe_legacy_import",
+                    "An older export cannot replace opportunity or study history. Choose a complete Stage 3c export.",
+                ));
+            }
+            if source_schema == 1 && !current.progress.grants.is_empty() {
+                return Err(CommandError::new(
+                    "unsafe_legacy_import",
+                    "A legacy v1 export cannot replace earned reward history. Choose a complete Stage 3b export.",
+                ));
+            }
+            if source_schema < 5 && current.daily.has_history(&current.objectives) {
+                return Err(CommandError::new(
+                    "unsafe_legacy_import",
+                    "An older export cannot replace objective organization or checkpoint history. Choose a complete Stage 4.5 export.",
+                ));
+            }
+            validate_records(&records)?;
+            if RecordSet::from(&current) == records {
+                diagnostic::unchanged();
+                return Ok(RestoreResult {
+                    workspace: current,
+                    backup_created: false,
+                    unchanged: true,
+                });
+            }
+            // The write lock binds the backup to precisely the state this restore replaces.
+            write_restore_backup(&current, backup_dir)?;
+            diagnostic::backup_created();
+            let workspace = records.into_workspace(new_id());
+            replace_workspace_for_restore(&transaction, &workspace)?;
+            Ok(RestoreResult {
+                workspace,
+                backup_created: true,
+                unchanged: false,
+            })
+        })();
+        let result = match replacement {
+            Ok(result) => result,
+            Err(error) => {
+                rollback_restore(transaction);
+                return Err(error);
+            }
+        };
+        diagnostic::phase("commit");
+        // Execute the same COMMIT used by Transaction::commit, retaining the
+        // guard long enough to observe cleanup if SQLite rejects this commit.
+        if let Err(error) = storage(transaction.execute_batch("COMMIT")) {
+            rollback_restore(transaction);
+            return Err(error);
         }
-        if source_schema < 4 && current.world.has_history() {
-            return Err(CommandError::new(
-                "unsafe_legacy_import",
-                "An older export cannot replace River Reach history or its accounting. Choose a complete Stage 4 export.",
-            ));
+        diagnostic::transaction("committed");
+        drop(transaction);
+        if !result.unchanged {
+            self.backup.data_changed();
         }
-        if source_schema < 3 && current.study.record_count() > 0 {
-            return Err(CommandError::new(
-                "unsafe_legacy_import",
-                "An older export cannot replace opportunity or study history. Choose a complete Stage 3c export.",
-            ));
+        Ok(result)
+    }
+}
+
+fn rollback_restore(transaction: rusqlite::Transaction<'_>) {
+    if transaction.is_autocommit() {
+        crate::restore_diagnostics::transaction("ended_before_explicit_rollback");
+    } else {
+        match transaction.rollback() {
+            Ok(()) => crate::restore_diagnostics::transaction("rolled_back"),
+            Err(error) => crate::restore_diagnostics::rollback_error(&error),
         }
-        if source_schema == 1 && !current.progress.grants.is_empty() {
-            return Err(CommandError::new(
-                "unsafe_legacy_import",
-                "A legacy v1 export cannot replace earned reward history. Choose a complete Stage 3b export.",
-            ));
-        }
-        if source_schema < 5 && current.daily.has_history(&current.objectives) {
-            return Err(CommandError::new(
-                "unsafe_legacy_import",
-                "An older export cannot replace objective organization or checkpoint history. Choose a complete Stage 4.5 export.",
-            ));
-        }
-        validate_records(&records)?;
-        if RecordSet::from(&current) == records {
-            storage(transaction.commit())?;
-            return Ok(RestoreResult {
-                workspace: current,
-                backup_created: false,
-                unchanged: true,
-            });
-        }
-        // The write lock binds the backup to precisely the state this restore replaces.
-        write_restore_backup(&current, backup_dir)?;
-        let workspace = records.into_workspace(new_id());
-        replace_workspace_for_restore(&transaction, &workspace)?;
-        storage(transaction.commit())?;
-        self.backup.data_changed();
-        Ok(RestoreResult {
-            workspace,
-            backup_created: true,
-            unchanged: false,
-        })
     }
 }
 
@@ -370,18 +410,28 @@ fn migration_backup(
 }
 
 fn write_restore_backup(workspace: &Workspace, backup_dir: &Path) -> Result<(), CommandError> {
+    use crate::restore_diagnostics as diagnostic;
+    fn failure(error: std::io::Error) -> CommandError {
+        diagnostic::filesystem(&error);
+        CommandError::backup()
+    }
+    diagnostic::phase("encode_displaced_backup");
     let bytes = encoded_records(&RecordSet::from(workspace)).map_err(|_| CommandError::backup())?;
-    fs::create_dir_all(backup_dir).map_err(|_| CommandError::backup())?;
+    diagnostic::phase("create_backup_directory");
+    fs::create_dir_all(backup_dir).map_err(failure)?;
     let path = backup_dir.join(format!("before-restore-{}.json", new_id()));
+    diagnostic::phase("create_displaced_backup");
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
-        .map_err(|_| CommandError::backup())?;
-    file.write_all(&bytes)
-        .and_then(|_| file.flush())
-        .and_then(|_| file.sync_all())
-        .map_err(|_| CommandError::backup())
+        .map_err(failure)?;
+    diagnostic::phase("write_displaced_backup");
+    file.write_all(&bytes).map_err(failure)?;
+    diagnostic::phase("flush_displaced_backup");
+    file.flush().map_err(failure)?;
+    diagnostic::phase("sync_displaced_backup");
+    file.sync_all().map_err(failure)
 }
 
 pub(crate) fn read_workspace(connection: &Connection) -> Result<Workspace, CommandError> {
@@ -597,12 +647,19 @@ fn replace_workspace_for_restore(
     connection: &Connection,
     workspace: &Workspace,
 ) -> Result<(), CommandError> {
+    use crate::restore_diagnostics as diagnostic;
+    diagnostic::phase("clear_daily");
     daily::clear(connection)?;
+    diagnostic::phase("clear_world");
     world::clear(connection)?;
+    diagnostic::phase("clear_study");
     study::clear(connection)?;
+    diagnostic::phase("clear_progress");
     progress::clear(connection)?;
+    diagnostic::phase("clear_work");
     storage(connection.execute_batch("UPDATE workspace_state SET selected_objective_id=NULL; DELETE FROM notes; DELETE FROM actions; DELETE FROM objectives; DELETE FROM projects;"))?;
     {
+        diagnostic::phase("insert_projects");
         let mut statement = storage(connection.prepare(
             "INSERT INTO projects(id,title,revision,created_at,updated_at) VALUES (?1,?2,?3,?4,?5)",
         ))?;
@@ -617,6 +674,7 @@ fn replace_workspace_for_restore(
         }
     }
     {
+        diagnostic::phase("insert_objectives");
         let mut statement = storage(connection.prepare("INSERT INTO objectives(id,project_id,title,revision,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6)"))?;
         for objective in &workspace.objectives {
             storage(statement.execute(params![
@@ -630,6 +688,7 @@ fn replace_workspace_for_restore(
         }
     }
     {
+        diagnostic::phase("insert_actions");
         let mut statement = storage(connection.prepare("INSERT INTO actions(id,objective_id,description,stop_condition,revision,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7)"))?;
         for action in &workspace.actions {
             storage(statement.execute(params![
@@ -644,6 +703,7 @@ fn replace_workspace_for_restore(
         }
     }
     {
+        diagnostic::phase("insert_notes");
         let mut statement = storage(connection.prepare("INSERT INTO notes(id,objective_id,text,revision,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6)"))?;
         for note in &workspace.notes {
             storage(statement.execute(params![
@@ -656,10 +716,15 @@ fn replace_workspace_for_restore(
             ]))?;
         }
     }
+    diagnostic::phase("restore_progress");
     progress::restore(connection, &workspace.progress)?;
+    diagnostic::phase("restore_study");
     study::restore(connection, &workspace.study)?;
+    diagnostic::phase("restore_world");
     world::restore(connection, &workspace.world)?;
+    diagnostic::phase("restore_daily");
     daily::restore(connection, &workspace.daily)?;
+    diagnostic::phase("update_workspace_state");
     storage(connection.execute(
         "UPDATE workspace_state SET generation=?1,selected_objective_id=?2 WHERE singleton=1",
         params![workspace.generation, workspace.selected_objective_id],
