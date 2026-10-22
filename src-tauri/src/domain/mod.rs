@@ -4,8 +4,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use uuid::Uuid;
 
-pub const MAX_IMPORT_BYTES: usize = 10 * 1024 * 1024;
-pub const MAX_RECORDS: usize = 10_000;
+// Additive planning rows must not make a previously valid Stage 4 workspace
+// unmigratable. Older envelopes retain their original limits.
+pub const LEGACY_MAX_IMPORT_BYTES: usize = 10 * 1024 * 1024;
+pub const LEGACY_MAX_RECORDS: usize = 10_000;
+pub const MAX_IMPORT_BYTES: usize = 12 * 1024 * 1024;
+pub const MAX_RECORDS: usize = 12_500;
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct CommandError {
@@ -92,6 +96,7 @@ pub struct Workspace {
     #[serde(serialize_with = "crate::study::serialize_view")]
     pub study: crate::study::StudyState,
     pub world: crate::world::WorldState,
+    pub daily: crate::daily::DailyState,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -112,9 +117,11 @@ pub struct RecordSet {
     pub study: Option<crate::study::StudyState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub world: Option<crate::world::WorldState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daily: Option<crate::daily::DailyState>,
 }
 
-fn required_nullable<'de, D: serde::Deserializer<'de>>(
+pub(crate) fn required_nullable<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<String>, D::Error> {
     Option::<String>::deserialize(deserializer)
@@ -124,7 +131,7 @@ impl From<&Workspace> for RecordSet {
     fn from(workspace: &Workspace) -> Self {
         Self {
             format: "ascension-records".into(),
-            schema_version: 4,
+            schema_version: 5,
             selected_objective_id: workspace.selected_objective_id.clone(),
             projects: workspace.projects.clone(),
             objectives: workspace.objectives.clone(),
@@ -133,6 +140,7 @@ impl From<&Workspace> for RecordSet {
             progress: Some(workspace.progress.clone()),
             study: Some(workspace.study.clone()),
             world: Some(workspace.world.clone()),
+            daily: Some(workspace.daily.clone()),
         }
     }
 }
@@ -151,6 +159,10 @@ impl RecordSet {
             self.world = Some(crate::world::WorldState::default());
             self.schema_version = 4;
         }
+        if self.schema_version == 4 && self.daily.is_none() {
+            self.daily = Some(crate::daily::from_legacy(&self.objectives));
+            self.schema_version = 5;
+        }
     }
     pub fn normalize(&mut self) {
         self.projects.sort_by(|a, b| a.id.cmp(&b.id));
@@ -166,6 +178,9 @@ impl RecordSet {
         if let Some(world) = &mut self.world {
             world.normalize();
         }
+        if let Some(daily) = &mut self.daily {
+            daily.normalize();
+        }
     }
     pub fn into_workspace(self, generation: String) -> Workspace {
         Workspace {
@@ -178,6 +193,7 @@ impl RecordSet {
             progress: self.progress.unwrap_or_default(),
             study: self.study.unwrap_or_default(),
             world: self.world.unwrap_or_default(),
+            daily: self.daily.unwrap_or_default(),
         }
     }
 }
@@ -255,6 +271,9 @@ pub struct RecordCounts {
     pub world_spent_bc: u32,
     pub world_funded_sites: u32,
     pub world_endings: usize,
+    pub objective_planning: usize,
+    pub checkpoints: usize,
+    pub checkpoint_commands: usize,
 }
 impl From<&Workspace> for RecordCounts {
     fn from(workspace: &Workspace) -> Self {
@@ -311,6 +330,9 @@ impl From<&Workspace> for RecordCounts {
                     .as_ref()
                     .is_some_and(|chapter| chapter.completion.is_some()),
             ),
+            objective_planning: workspace.daily.objectives.len(),
+            checkpoints: workspace.daily.checkpoints.len(),
+            checkpoint_commands: workspace.daily.commands.len(),
         }
     }
 }
@@ -377,26 +399,30 @@ fn metadata(
         ));
     }
     for timestamp in [created_at, updated_at] {
-        let parsed = DateTime::parse_from_rfc3339(timestamp).map_err(|_| {
-            CommandError::invalid(
-                "Record timestamps must be UTC timestamps with millisecond precision.",
-            )
-        })?;
-        if parsed
-            .with_timezone(&Utc)
-            .to_rfc3339_opts(SecondsFormat::Millis, true)
-            != timestamp
-        {
-            return Err(CommandError::invalid(
-                "Record timestamps must be UTC timestamps with millisecond precision.",
-            ));
-        }
+        validate_timestamp(timestamp)?;
+    }
+    Ok(())
+}
+pub(crate) fn validate_timestamp(timestamp: &str) -> Result<(), CommandError> {
+    let parsed = DateTime::parse_from_rfc3339(timestamp).map_err(|_| {
+        CommandError::invalid(
+            "Record timestamps must be UTC timestamps with millisecond precision.",
+        )
+    })?;
+    if parsed
+        .with_timezone(&Utc)
+        .to_rfc3339_opts(SecondsFormat::Millis, true)
+        != timestamp
+    {
+        return Err(CommandError::invalid(
+            "Record timestamps must be UTC timestamps with millisecond precision.",
+        ));
     }
     Ok(())
 }
 
 pub(crate) fn validate_records(records: &RecordSet) -> Result<(), CommandError> {
-    if ![1, 2, 3, 4].contains(&records.schema_version) {
+    if ![1, 2, 3, 4, 5].contains(&records.schema_version) {
         return Err(CommandError::new(
             "unsupported_schema",
             "This record schema version is not supported. Your saved workspace is unchanged.",
@@ -407,12 +433,25 @@ pub(crate) fn validate_records(records: &RecordSet) -> Result<(), CommandError> 
             "This is not an Ascension record set.",
         ));
     }
+    let legacy = records.schema_version <= 4;
+    let max_records = if legacy {
+        LEGACY_MAX_RECORDS
+    } else {
+        MAX_RECORDS
+    };
+    let max_bytes = if legacy {
+        LEGACY_MAX_IMPORT_BYTES
+    } else {
+        MAX_IMPORT_BYTES
+    };
     if (records.schema_version == 1 && records.progress.is_some())
         || (records.schema_version >= 2 && records.progress.is_none())
         || (records.schema_version < 3 && records.study.is_some())
         || (records.schema_version >= 3 && records.study.is_none())
         || (records.schema_version < 4 && records.world.is_some())
-        || (records.schema_version == 4 && records.world.is_none())
+        || (records.schema_version >= 4 && records.world.is_none())
+        || (records.schema_version < 5 && records.daily.is_some())
+        || (records.schema_version == 5 && records.daily.is_none())
     {
         return Err(CommandError::invalid(
             "The record schema and complete progress state do not match.",
@@ -434,11 +473,17 @@ pub(crate) fn validate_records(records: &RecordSet) -> Result<(), CommandError> 
             .world
             .as_ref()
             .map_or(0, |state| state.record_count())
-        > MAX_RECORDS
+        + records
+            .daily
+            .as_ref()
+            .map_or(0, |state| state.record_count())
+        > max_records
     {
-        return Err(CommandError::invalid(
-            "A workspace may contain at most 10,000 records.",
-        ));
+        return Err(CommandError::invalid(if legacy {
+            "An older record set may contain at most 10,000 records."
+        } else {
+            "A workspace may contain at most 12,500 records."
+        }));
     }
     let mut ids = HashSet::new();
     let mut projects = HashSet::new();
@@ -550,10 +595,15 @@ pub(crate) fn validate_records(records: &RecordSet) -> Result<(), CommandError> 
     if let Some(world) = &records.world {
         crate::world::validate(world, records)?;
     }
-    if encoded_records(records)?.len() > MAX_IMPORT_BYTES {
-        return Err(CommandError::invalid(
-            "The saved record set must fit within the 10 MiB export limit.",
-        ));
+    if let Some(daily) = &records.daily {
+        crate::daily::validate(daily, records)?;
+    }
+    if encoded_records(records)?.len() > max_bytes {
+        return Err(CommandError::invalid(if legacy {
+            "An older record set must fit within the 10 MiB export limit."
+        } else {
+            "The saved record set must fit within the 12 MiB export limit."
+        }));
     }
     Ok(())
 }
@@ -566,7 +616,7 @@ pub(crate) fn parse_import(bytes: &[u8]) -> Result<(RecordSet, u32), CommandErro
     if bytes.len() > MAX_IMPORT_BYTES {
         return Err(CommandError::new(
             "invalid_import",
-            "The import file exceeds the 10 MiB limit.",
+            "The import file exceeds the 12 MiB limit.",
         ));
     }
     let mut records: RecordSet = serde_json::from_slice(bytes).map_err(|_| {
@@ -575,6 +625,12 @@ pub(crate) fn parse_import(bytes: &[u8]) -> Result<(RecordSet, u32), CommandErro
             "The file is not a complete, valid Ascension JSON record set.",
         )
     })?;
+    if records.schema_version <= 4 && bytes.len() > LEGACY_MAX_IMPORT_BYTES {
+        return Err(CommandError::new(
+            "invalid_import",
+            "An older import file exceeds its 10 MiB limit.",
+        ));
+    }
     validate_records(&records).map_err(|error| {
         if error.code == "unsupported_schema" {
             error

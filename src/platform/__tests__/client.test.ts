@@ -20,6 +20,24 @@ describe("desktop command boundary", () => {
     await expect(client.loadWorkspace()).resolves.toBe(workspace);
     expect(invoke).toHaveBeenCalledWith("load_workspace");
   });
+  it("uses explicit daily commands and keeps checkpoint replay identities intact", async () => {
+    const status = { expected_generation: "generation", objective_id: "objective", status: "paused" as const };
+    await client.setObjectiveStatus(status); expect(invoke).toHaveBeenLastCalledWith("set_objective_status", { input: status });
+    const order = { expected_generation: "generation", objective_ids: ["second", "first"] };
+    await client.reorderObjectives(order); expect(invoke).toHaveBeenLastCalledWith("reorder_objectives", { input: order });
+    const checkpoint = { expected_generation: "generation", command_id: "stable-intent", objective_id: "objective", note: "Marked one position", reference: null, description: "Mark another", stop_condition: "Three marks", resumption_note: null, supersedes: null, correction_reason: null };
+    await client.recordCheckpoint(checkpoint); expect(invoke).toHaveBeenLastCalledWith("record_checkpoint", { input: checkpoint });
+    await client.recordCheckpoint(checkpoint); expect(invoke).toHaveBeenLastCalledWith("record_checkpoint", { input: checkpoint });
+    expect(checkpoint).not.toHaveProperty("amount_bc"); expect(checkpoint).not.toHaveProperty("accepted");
+  });
+  it("plans ordinary opportunities and exposes bounded recovery commands", async () => {
+    const input = { expected_generation: "generation", objective_id: "objective", meaningful_start: "Mark a position", cue_at: "2026-10-22T12:00:00.000Z", timezone: "UTC", available_minutes: 30 };
+    await client.planOrdinaryOpportunity(input); expect(invoke).toHaveBeenLastCalledWith("plan_ordinary_opportunity", { input });
+    await client.backupStatus(); expect(invoke).toHaveBeenLastCalledWith("backup_status");
+    await client.retryBackup(); expect(invoke).toHaveBeenLastCalledWith("retry_backup");
+    await client.previewRecovery(); expect(invoke).toHaveBeenLastCalledWith("preview_recovery");
+    await client.exportRecovery(); expect(invoke).toHaveBeenLastCalledWith("export_recovery");
+  });
 
   it("uses bounded world commands and previews without issuing reward authority", async () => {
     await client.loadWorld(); expect(invoke).toHaveBeenLastCalledWith("load_world");

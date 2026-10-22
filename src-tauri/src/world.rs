@@ -329,7 +329,10 @@ fn invalid(message: &str) -> CommandError {
     CommandError::invalid(message)
 }
 fn db<T>(value: rusqlite::Result<T>) -> Result<T, CommandError> {
-    value.map_err(|_| CommandError::storage())
+    value.map_err(|error| {
+        crate::restore_diagnostics::sqlite(&error);
+        CommandError::storage()
+    })
 }
 fn encode<T: Serialize>(value: &T) -> Result<String, CommandError> {
     serde_json::to_string(value).map_err(|_| CommandError::storage())
@@ -883,6 +886,7 @@ fn insert<T: Serialize>(
     id: &str,
     value: &T,
 ) -> Result<(), CommandError> {
+    crate::restore_diagnostics::table_operation("insert", table);
     db(c.execute(
         &format!("INSERT INTO {table}(id,payload) VALUES (?1,?2)"),
         params![id, encode(value)?],
@@ -890,6 +894,10 @@ fn insert<T: Serialize>(
     Ok(())
 }
 fn put_chapter(c: &Connection, chapter: &WorldChapter, new: bool) -> Result<(), CommandError> {
+    crate::restore_diagnostics::table_operation(
+        if new { "insert" } else { "update" },
+        "world_chapter",
+    );
     if new {
         db(c.execute(
             "INSERT INTO world_chapter(id,singleton,payload) VALUES (?1,1,?2)",
@@ -1226,6 +1234,10 @@ pub(crate) fn validate(state: &WorldState, records: &RecordSet) -> Result<(), Co
         ids!(&s.burdens);
         ids!(&s.reflections);
         ids!(&s.preferences);
+    }
+    if let Some(daily) = &records.daily {
+        ids!(&daily.checkpoints);
+        ids!(&daily.commands);
     }
     let mut owned = HashSet::new();
     for command in &state.commands {

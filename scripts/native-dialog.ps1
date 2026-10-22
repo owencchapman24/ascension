@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory)][string]$RunRoot,
     [Parameter(Mandatory)][string]$Repository,
     [Parameter(Mandatory)][int]$ApplicationId,
-    [Parameter(Mandatory)][ValidateSet('Export saved Ascension records', 'Preview an Ascension export')][string]$Title,
+    [Parameter(Mandatory)][ValidateSet('Export saved Ascension records', 'Preview an Ascension export', 'Export an Ascension recovery copy')][string]$Title,
     [ValidateSet('Inspect', 'Select', 'Cancel')][string]$Action = 'Inspect',
     [string]$SelectedPath
 )
@@ -89,7 +89,7 @@ if ($button.Count -ne 1) { throw 'Expected one enabled native dialog button.' }
 if ($Action -eq 'Select') {
     if (!$SelectedPath) { throw 'A disposable file path is required.' }
     # Observed common-dialog IDs: Save uses 1001, Open uses edt1 (1148).
-    $editId = if ($Title -eq 'Export saved Ascension records') { 1001 } else { 1148 }
+    $editId = if ($Title -in @('Export saved Ascension records', 'Export an Ascension recovery copy')) { 1001 } else { 1148 }
     $edit = @($nativeControls | Where-Object { $_.class -eq 'Edit' -and $_.id -eq $editId -and $_.visible -and $_.enabled })
     if ($edit.Count -ne 1) {
         $nativeControls | Where-Object { $_.class -in @('Edit', 'Button') } | ConvertTo-Json -Depth 3 | Write-Output

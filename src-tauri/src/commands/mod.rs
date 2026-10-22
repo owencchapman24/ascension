@@ -8,6 +8,7 @@ use std::{
 use serde::Serialize;
 use tauri::State;
 
+use crate::daily::*;
 use crate::progress::*;
 use crate::service::{AcceptanceResult, ReviewResult};
 use crate::study::*;
@@ -87,10 +88,12 @@ impl AppState {
         &self,
         operation: impl FnOnce(&mut WorkspaceService) -> Result<T, CommandError>,
     ) -> Result<T, CommandError> {
+        crate::restore_diagnostics::phase("service_lock");
         let mut guard = self.service.lock().map_err(|_| storage_error())?;
         // A transient startup failure must not make the UI's retry permanently fail.
         // Reuse the same guarded open path; never recreate or replace a failed database.
         if guard.is_err() {
+            crate::restore_diagnostics::phase("reopen_service");
             *guard = Self::open_service(self.data_dir.as_deref());
         }
         let service = guard.as_mut().map_err(|failure| failure.clone())?;
@@ -105,6 +108,71 @@ async fn service_task<T: Send + 'static>(
     tauri::async_runtime::spawn_blocking(move || state.with_service(operation))
         .await
         .map_err(|_| storage_error())?
+}
+
+#[tauri::command]
+pub(crate) async fn set_objective_status(
+    state: State<'_, AppState>,
+    input: SetObjectiveStatusInput,
+) -> Result<Workspace, CommandError> {
+    service_task(state.inner().clone(), move |service| {
+        service.set_objective_status(input)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn reorder_objectives(
+    state: State<'_, AppState>,
+    input: ReorderObjectivesInput,
+) -> Result<Workspace, CommandError> {
+    service_task(state.inner().clone(), move |service| {
+        service.reorder_objectives(input)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn record_checkpoint(
+    state: State<'_, AppState>,
+    input: RecordCheckpointInput,
+) -> Result<crate::daily::CheckpointResult, CommandError> {
+    service_task(state.inner().clone(), move |service| {
+        service.record_checkpoint(input)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn plan_ordinary_opportunity(
+    state: State<'_, AppState>,
+    input: PlanOrdinaryOpportunityInput,
+) -> Result<Workspace, CommandError> {
+    service_task(state.inner().clone(), move |service| {
+        service.plan_ordinary_opportunity(input)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn backup_status(
+    state: State<'_, AppState>,
+) -> Result<crate::backup::BackupStatus, CommandError> {
+    service_task(state.inner().clone(), |service| Ok(service.backup_status())).await
+}
+
+#[tauri::command]
+pub(crate) async fn retry_backup(
+    state: State<'_, AppState>,
+) -> Result<crate::backup::BackupStatus, CommandError> {
+    service_task(state.inner().clone(), |service| Ok(service.retry_backup())).await
+}
+
+#[tauri::command]
+pub(crate) async fn preview_recovery(
+    state: State<'_, AppState>,
+) -> Result<ImportPreview, CommandError> {
+    service_task(state.inner().clone(), |service| service.preview_recovery()).await
 }
 
 #[tauri::command]
@@ -254,15 +322,47 @@ pub(crate) async fn restore_import(
     state: State<'_, AppState>,
     input: RestoreInput,
 ) -> Result<RestoreResult, CommandError> {
-    service_task(state.inner().clone(), move |service| {
-        service.restore_import(input)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::restore_diagnostics::attempt(|| {
+            state.with_service(|service| service.restore_import(input))
+        })
     })
     .await
+    .map_err(|_| storage_error())?
 }
 
 #[derive(Serialize)]
 pub(crate) struct ExportResult {
     file_name: String,
+}
+
+// Recovery export deliberately works when the primary database cannot be opened.
+// It never replaces that database; the user chooses the destination through the
+// same native-only file boundary as a normal portable export.
+#[tauri::command]
+pub(crate) async fn export_recovery(
+    state: State<'_, AppState>,
+) -> Result<Option<ExportResult>, CommandError> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = state.data_dir.as_deref().ok_or_else(storage_error)?;
+        let (bytes, _) = crate::backup::latest_export(&root.join("backups"))?;
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Export an Ascension recovery copy")
+            .add_filter("Ascension records", &["json"])
+            .set_file_name("ascension-recovery.json")
+            .save_file()
+        else {
+            return Ok(None);
+        };
+        write_export(&path, root, &bytes)?;
+        Ok(Some(ExportResult {
+            file_name: selected_name(&path),
+        }))
+    })
+    .await
+    .map_err(|_| file_error())?
 }
 
 fn selected_name(path: &Path) -> String {
@@ -330,7 +430,7 @@ fn read_import(path: &Path) -> Result<Vec<u8>, CommandError> {
     if !metadata.is_file() || metadata.len() > MAX_IMPORT_BYTES as u64 {
         return Err(error(
             "invalid_import",
-            "Choose an Ascension JSON export no larger than 10 MiB.",
+            "Choose an Ascension JSON export no larger than 12 MiB.",
         ));
     }
     let mut bytes = Vec::new();
@@ -340,7 +440,7 @@ fn read_import(path: &Path) -> Result<Vec<u8>, CommandError> {
     if bytes.len() > MAX_IMPORT_BYTES {
         return Err(error(
             "invalid_import",
-            "Choose an Ascension JSON export no larger than 10 MiB.",
+            "Choose an Ascension JSON export no larger than 12 MiB.",
         ));
     }
     Ok(bytes)

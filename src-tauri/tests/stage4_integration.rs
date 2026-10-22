@@ -165,7 +165,7 @@ fn fixture(service: &mut WorkspaceService, count: usize, opportunities: usize) -
 
 fn as_v4_database(path: &Path) {
     let c = Connection::open(path).unwrap();
-    c.execute_batch("PRAGMA foreign_keys=OFF; DROP TABLE world_commands; DROP TABLE world_spending; DROP TABLE world_chapter; PRAGMA user_version=4;").unwrap();
+    c.execute_batch("PRAGMA foreign_keys=OFF; DROP TABLE checkpoint_commands; DROP TABLE work_checkpoints; DROP TABLE objective_planning; DROP TABLE world_commands; DROP TABLE world_spending; DROP TABLE world_chapter; PRAGMA user_version=4;").unwrap();
 }
 
 #[test]
@@ -185,7 +185,7 @@ fn populated_v4_upgrade_preserves_reward_and_frozen_study_graph_with_coherent_ba
     assert_eq!(
         c.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
             .unwrap(),
-        5
+        6
     );
     assert_eq!(
         c.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -198,7 +198,12 @@ fn populated_v4_upgrade_preserves_reward_and_frozen_study_graph_with_coherent_ba
     let migration = fs::read_dir(&backups)
         .unwrap()
         .map(|p| p.unwrap().path())
-        .find(|p| p.extension().is_some_and(|e| e == "sqlite3"))
+        .find(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("before-migration-")
+        })
         .unwrap();
     let backup = Connection::open(migration).unwrap();
     assert_eq!(
@@ -335,6 +340,92 @@ fn command(service: &mut WorkspaceService, operation: WorldOperation) -> Workspa
         })
         .unwrap()
         .workspace
+}
+
+#[test]
+fn daily_lifecycle_checkpoint_and_restore_preserve_accepted_reward_and_funded_world_graph() {
+    use ascension_lib::daily::*;
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("daily-authority.sqlite3");
+    let backups = directory.path().join("backups");
+    let mut service = WorkspaceService::open(&database, &backups).unwrap();
+    fixture(&mut service, 6, 2);
+    command(&mut service, WorldOperation::Initialize);
+    command(
+        &mut service,
+        WorldOperation::Queue {
+            building_type: BuildingType::SurveyLodge,
+            parcels: vec![Site::A1],
+            reserve_available: true,
+        },
+    );
+    command(&mut service, WorldOperation::CompleteConstruction);
+    command(
+        &mut service,
+        WorldOperation::Queue {
+            building_type: BuildingType::Observatory,
+            parcels: vec![Site::B3],
+            reserve_available: true,
+        },
+    );
+    let before = service.load_workspace().unwrap();
+    let objective = before.objectives[0].id.clone();
+    for status in [
+        ObjectiveStatus::Archived,
+        ObjectiveStatus::Active,
+        ObjectiveStatus::Paused,
+        ObjectiveStatus::Active,
+    ] {
+        let current = service.load_workspace().unwrap();
+        let result = service
+            .set_objective_status(SetObjectiveStatusInput {
+                expected_generation: current.generation,
+                objective_id: objective.clone(),
+                status,
+            })
+            .unwrap();
+        assert_eq!(result.objectives, before.objectives);
+        assert_eq!(result.progress, before.progress);
+        assert_eq!(result.study, before.study);
+        assert_eq!(result.world, before.world);
+    }
+    let current = service.load_workspace().unwrap();
+    let action = current
+        .actions
+        .iter()
+        .find(|a| a.objective_id == objective)
+        .unwrap();
+    let input = RecordCheckpointInput {
+        expected_generation: current.generation.clone(),
+        command_id: Uuid::new_v4().to_string(),
+        objective_id: objective,
+        note: "Recorded a synthetic stopping point after earlier accepted work.".into(),
+        reference: Some("synthetic-report.txt".into()),
+        description: action.description.clone(),
+        stop_condition: action.stop_condition.clone(),
+        resumption_note: Some("Continue the next unaccepted section.".into()),
+        supersedes: None,
+        correction_reason: None,
+    };
+    let saved = service.record_checkpoint(input.clone()).unwrap();
+    assert_eq!(saved.workspace.progress, before.progress);
+    assert_eq!(saved.workspace.study, before.study);
+    assert_eq!(saved.workspace.world, before.world);
+    let bytes = service.export_bytes().unwrap();
+    let mut target = WorkspaceService::open(
+        &directory.path().join("restored.sqlite3"),
+        &directory.path().join("restored-backups"),
+    )
+    .unwrap();
+    let restored = restore(&mut target, &bytes);
+    assert_eq!(restored.daily, saved.workspace.daily);
+    assert_eq!(restored.progress, before.progress);
+    assert_eq!(restored.study, before.study);
+    assert_eq!(restored.world, before.world);
+    assert_eq!(
+        target.record_checkpoint(input).unwrap().checkpoint,
+        saved.checkpoint
+    );
 }
 
 fn measure<T>(size: usize, name: &str, f: impl FnOnce() -> T) -> T {

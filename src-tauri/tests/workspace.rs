@@ -75,7 +75,17 @@ impl Fixture {
 
     fn backup_paths(&self) -> Vec<PathBuf> {
         fs::read_dir(&self.backups)
-            .map(|entries| entries.map(|entry| entry.unwrap().path()).collect())
+            .map(|entries| {
+                entries
+                    .map(|entry| entry.unwrap().path())
+                    .filter(|path| {
+                        path.file_name()
+                            .unwrap()
+                            .to_string_lossy()
+                            .starts_with("before-")
+                    })
+                    .collect()
+            })
             .unwrap_or_default()
     }
 }
@@ -91,7 +101,7 @@ fn save_input(workspace: &Workspace, note: Option<String>) -> SaveWorkInput {
 }
 
 fn assert_legacy_records_preserved(actual: &RecordSet, legacy: &RecordSet) {
-    assert_eq!(actual.schema_version, 4);
+    assert_eq!(actual.schema_version, 5);
     assert_eq!(actual.format, legacy.format);
     assert_eq!(actual.projects, legacy.projects);
     assert_eq!(actual.objectives, legacy.objectives);
@@ -144,7 +154,7 @@ fn initialization_and_restart_preserve_authoritative_records_and_selection() {
         connection
             .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
             .unwrap(),
-        5
+        6
     );
 }
 
@@ -459,7 +469,15 @@ fn malformed_and_inconsistent_imports_do_not_change_any_saved_state() {
             .unwrap_err();
         assert!(["invalid_import", "unsupported_schema"].contains(&error.code.as_str()));
         assert_eq!(fixture.service.load_workspace().unwrap(), original);
-        assert!(fixture.backup_paths().is_empty());
+        assert!(
+            fs::read_dir(&fixture.backups)
+                .map(|mut entries| entries.all(|entry| !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("before-")))
+                .unwrap_or(true)
+        );
     }
 }
 
@@ -585,6 +603,15 @@ fn preview_retains_exact_validated_bytes_and_cross_connection_restore_is_stale()
 fn backup_failure_and_transaction_failure_preserve_original_workspace() {
     let mut fixture = Fixture::new();
     let original = fixture.populate();
+    drop(fixture.service);
+    if fixture.backups.exists() {
+        fs::rename(
+            &fixture.backups,
+            fixture._directory.path().join("prior-backups"),
+        )
+        .unwrap();
+    }
+    fixture.service = WorkspaceService::open(&fixture.database, &fixture.backups).unwrap();
     fs::write(
         &fixture.backups,
         b"synthetic file blocks directory creation",
@@ -711,7 +738,7 @@ fn every_saved_workspace_remains_within_the_reimportable_export_size_limit() {
     let sample: RecordSet = serde_json::from_slice(SAMPLE).unwrap();
     let mut records: RecordSet = serde_json::from_slice(EMPTY).unwrap();
     records.projects.push(sample.projects[0].clone());
-    for _ in 0..1_300 {
+    for _ in 0..1_600 {
         let mut objective = sample.objectives[0].clone();
         objective.id = uuid::Uuid::new_v4().to_string();
         objective.project_id = records.projects[0].id.clone();
@@ -1223,7 +1250,15 @@ fn explicit_restore_of_conflicting_local_ids_preserves_incoming_versions_and_rec
         .preview_import(&old_export, "older-synthetic-export.json".into())
         .unwrap();
     assert_eq!(fixture.service.load_workspace().unwrap(), new);
-    assert!(fixture.backup_paths().is_empty());
+    assert!(
+        fs::read_dir(&fixture.backups)
+            .map(|mut entries| entries.all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("before-")))
+            .unwrap_or(true)
+    );
     let restored = fixture
         .service
         .restore_import(RestoreInput {
@@ -1289,9 +1324,17 @@ fn valid_sqlite_with_corrupted_current_records_is_rejected_without_replacing_rec
             connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
                 .unwrap(),
-            5
+            6
         );
-        assert!(!fixture.backups.exists());
+        assert!(
+            fs::read_dir(&fixture.backups)
+                .map(|mut entries| entries.all(|entry| !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("before-")))
+                .unwrap_or(true)
+        );
     }
 }
 

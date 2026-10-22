@@ -24,6 +24,7 @@ export const snapshot: ReviewSnapshot = {
 };
 const metadata = { revision: 1, created_at: timestamp, updated_at: timestamp };
 export const progressWorkspace: Workspace = {
+  daily: { objectives: [{ objective_id: id(2), status: "active", priority: 0, revision: 1, updated_at: timestamp }], checkpoints: [], commands: [] },
   world: { chapter: null, spending: [], commands: [] },
   study: emptyStudy,
   generation: id(99), selected_objective_id: id(2), projects: [{ ...metadata, id: id(1), title: "Sample garden" }],

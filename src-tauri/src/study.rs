@@ -164,6 +164,14 @@ model!(PlanOpportunityInput {
     meaningful_start:String,cue_at:String,timezone:String,window_seconds:u32,eligible:bool,
     unavailability:Option<String>,priority:Priority,available_minutes:u32,deadline_at:Option<String>,context:Option<String>
 });
+model!(PlanOrdinaryOpportunityInput {
+    expected_generation: String,
+    objective_id: String,
+    meaningful_start: String,
+    cue_at: String,
+    timezone: String,
+    available_minutes: u32
+});
 model!(RecordOpportunityOutcomeInput {
     expected_generation:String,opportunity_id:String,report:Report,started_at:Option<String>,precision:Precision,
     uncertainty_seconds:Option<u32>,note:Option<String>,technical_failure:bool,
@@ -187,7 +195,10 @@ fn invalid(message: &str) -> CommandError {
     CommandError::invalid(message)
 }
 fn db<T>(result: rusqlite::Result<T>) -> Result<T, CommandError> {
-    result.map_err(|_| CommandError::storage())
+    result.map_err(|error| {
+        crate::restore_diagnostics::sqlite(&error);
+        CommandError::storage()
+    })
 }
 fn encode<T: Serialize>(value: &T) -> Result<String, CommandError> {
     serde_json::to_string(value).map_err(|_| CommandError::storage())
@@ -215,6 +226,7 @@ fn optional(value: &Option<String>, field: &str) -> Result<(), CommandError> {
     Ok(())
 }
 fn insert<T: Serialize>(c: &Connection, table: &str, id: &str, v: &T) -> Result<(), CommandError> {
+    crate::restore_diagnostics::table_operation("insert", table);
     db(c.execute(
         &format!("INSERT INTO {table}(id,payload) VALUES(?1,?2)"),
         params![id, encode(v)?],
@@ -476,6 +488,67 @@ pub(crate) fn transition(c: &Connection, i: TransitionStudyInput) -> Result<(), 
     insert(c, "study_protocol_events", &row.id, &row)?;
     changed(c)
 }
+/// Ordinary planning is deliberately independent of protocol enrollment and epoch
+/// transitions. Creating this contextual epoch must not pause an active E01.
+/// The repository runs epoch creation and the declaration in one transaction.
+pub(crate) fn plan_ordinary(
+    c: &Connection,
+    i: PlanOrdinaryOpportunityInput,
+) -> Result<(), CommandError> {
+    generation(c, &i.expected_generation)?;
+    valid_id(&i.objective_id)?;
+    text(&i.timezone, 100, "Timezone")?;
+    let at = study_now();
+    let cue = stamp(&i.cue_at)?;
+    if cue <= stamp(&at)? {
+        return Err(invalid("Declare the opportunity before its cue."));
+    }
+    let state = read(c)?;
+    let epoch = state
+        .epochs
+        .iter()
+        .filter(|e| {
+            e.label == "Ordinary work (automatic context)"
+                && e.timezone == i.timezone
+                && e.effective_from <= at
+                && !state.manifests.iter().any(|m| m.epoch_id == e.id)
+        })
+        .min_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+    let epoch_id = if let Some(epoch) = epoch {
+        epoch.id.clone()
+    } else {
+        let row = ScheduleEpoch {
+            id: new_id(),
+            label: "Ordinary work (automatic context)".into(),
+            effective_from: at.clone(),
+            timezone: i.timezone.clone(),
+            created_at: at,
+        };
+        insert(c, "schedule_epochs", &row.id, &row)?;
+        row.id
+    };
+    plan(
+        c,
+        PlanOpportunityInput {
+            expected_generation: i.expected_generation,
+            objective_id: i.objective_id,
+            epoch_id,
+            manifest_id: None,
+            domain: "Ordinary work".into(),
+            meaningful_start: i.meaningful_start,
+            cue_at: i.cue_at,
+            timezone: i.timezone,
+            window_seconds: 900,
+            eligible: true,
+            unavailability: None,
+            priority: Priority::Ordinary,
+            available_minutes: i.available_minutes,
+            deadline_at: None,
+            context: None,
+        },
+    )
+}
+
 pub(crate) fn plan(c: &Connection, i: PlanOpportunityInput) -> Result<(), CommandError> {
     generation(c, &i.expected_generation)?;
     let s = read(c)?;

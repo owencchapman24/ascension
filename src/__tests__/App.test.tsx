@@ -6,12 +6,12 @@ import * as api from "../platform/client";
 import type { ImportPreview, Workspace } from "../platform/client";
 import { emptyProgress, progressWorkspace } from "../progress/__tests__/fixtures";
 import { emptyStudy } from "../study/emptyStudy";
-import { epoch as studyEpoch, manifest as studyManifest } from "../study/__tests__/fixtures";
+import { epoch as studyEpoch, manifest as studyManifest, opportunity as studyOpportunity } from "../study/__tests__/fixtures";
 import { fundedWorld, queuedWorld, validPreview, world } from "../world/__tests__/fixtures";
 
 vi.mock("../platform/client", async (importOriginal) => {
   const original = await importOriginal<typeof api>();
-  return { ...original, loadWorkspace: vi.fn(), loadWorld: vi.fn(), previewWorld: vi.fn(), worldCommand: vi.fn(), createProject: vi.fn(), updateProject: vi.fn(), createObjective: vi.fn(), updateObjective: vi.fn(), selectObjective: vi.fn(), saveWork: vi.fn(), exportWorkspace: vi.fn(), previewImport: vi.fn(), restoreImport: vi.fn(), saveCriterion: vi.fn(), lockCriterion: vi.fn(), recordEvidence: vi.fn(), reviewProgress: vi.fn(), acceptProgress: vi.fn(), correctAcceptance: vi.fn(), rejectReview: vi.fn() };
+  return { ...original, loadWorkspace: vi.fn(), backupStatus: vi.fn().mockResolvedValue({state: "ready", latest_successful_day: "2026-10-21", snapshot_count: 1, warning: null}), retryBackup: vi.fn(), previewRecovery: vi.fn(), exportRecovery: vi.fn(), setObjectiveStatus: vi.fn(), reorderObjectives: vi.fn(), recordCheckpoint: vi.fn(), loadWorld: vi.fn(), previewWorld: vi.fn(), worldCommand: vi.fn(), createProject: vi.fn(), updateProject: vi.fn(), createObjective: vi.fn(), updateObjective: vi.fn(), selectObjective: vi.fn(), saveWork: vi.fn(), exportWorkspace: vi.fn(), previewImport: vi.fn(), restoreImport: vi.fn(), saveCriterion: vi.fn(), lockCriterion: vi.fn(), recordEvidence: vi.fn(), reviewProgress: vi.fn(), acceptProgress: vi.fn(), correctAcceptance: vi.fn(), rejectReview: vi.fn() };
 });
 
 const projectId = "00000000-0000-4000-8000-000000000001";
@@ -20,6 +20,7 @@ const secondId = "00000000-0000-4000-8000-000000000005";
 const generation = "00000000-0000-4000-8000-000000000010";
 const metadata = { revision: 1, created_at: "2026-10-16T12:00:00.000Z", updated_at: "2026-10-16T12:00:00.000Z" };
 const saved: Workspace = {
+  daily: { objectives: [{ objective_id: objectiveId, status: "active", priority: 0, revision: 1, updated_at: metadata.updated_at }, { objective_id: secondId, status: "active", priority: 1, revision: 1, updated_at: metadata.updated_at }], checkpoints: [], commands: [] },
   world: { chapter: null, spending: [], commands: [] },
   study: emptyStudy,
   generation, selected_objective_id: objectiveId,
@@ -29,7 +30,7 @@ const saved: Workspace = {
   notes: [{ ...metadata, id: "00000000-0000-4000-8000-000000000004", objective_id: objectiveId, text: "Compare the sunny corner next time." }],
   progress: emptyProgress,
 };
-const progressCounts = { criteria: 1, evidence: 2, snapshots: 1, acceptances: 1, corrections: 0, grants: 1, ledger: 1, commands: 1, wallet_bc: 4, opportunities: 0, assignments: 0, outcome_events: 0, study_manifests: 0, schedule_epochs: 0, exposures: 0, burdens: 0, reflections: 0, world_commands: 0, world_spends: 0, world_buildings: 0, world_reserved_bc: 0, world_spent_bc: 0, world_funded_sites: 0, world_endings: 0 };
+const progressCounts = { criteria: 1, evidence: 2, snapshots: 1, acceptances: 1, corrections: 0, grants: 1, ledger: 1, commands: 1, wallet_bc: 4, opportunities: 0, assignments: 0, outcome_events: 0, study_manifests: 0, schedule_epochs: 0, exposures: 0, burdens: 0, reflections: 0, world_commands: 0, world_spends: 0, world_buildings: 0, world_reserved_bc: 0, world_spent_bc: 0, world_funded_sites: 0, world_endings: 0, objective_planning: 2, checkpoints: 0, checkpoint_commands: 0 };
 const incoming: ImportPreview = { token: "00000000-0000-4000-8000-000000000020", generation, file_name: "sample-records.json", schema_version: 2,
   warning: "Complete replacement includes accepted progress and reward history.", current_counts: { projects: 1, objectives: 2, actions: 1, notes: 1, ...progressCounts }, incoming_counts: { projects: 2, objectives: 3, actions: 2, notes: 0, ...progressCounts, wallet_bc: 2 } };
 
@@ -40,8 +41,83 @@ async function editAction(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("Work", () => {
-  beforeEach(() => { vi.resetAllMocks(); vi.mocked(api.loadWorkspace).mockResolvedValue(structuredClone(saved)); });
+  beforeEach(() => { vi.resetAllMocks(); vi.mocked(api.backupStatus).mockResolvedValue({state: "ready", latest_successful_day: "2026-10-21", snapshot_count: 1, warning: null}); vi.mocked(api.loadWorkspace).mockResolvedValue(structuredClone(saved)); });
   afterEach(cleanup);
+  it.each(["focus", "archive"] as const)("retains the original checkpoint through a concurrent %s change while checking saved history", async (change) => {
+    const fresh: Workspace = { ...saved, generation: "00000000-0000-4000-8000-000000000091", selected_objective_id: secondId,
+      daily: { ...saved.daily, objectives: saved.daily.objectives.map((item) => item.objective_id === objectiveId && change === "archive" ? { ...item, status: "archived" } : item) } };
+    vi.mocked(api.recordCheckpoint).mockRejectedValueOnce({ code: "conflict", message: "Saved records changed." }).mockImplementation(async (input) => ({ workspace: fresh, checkpoint: {
+      id: "00000000-0000-4000-8000-000000000092", command_id: input.command_id, sequence: 1, objective_id: input.objective_id, note: input.note, reference: input.reference,
+      provenance: "self_report", recorded_at: metadata.updated_at, action_id: saved.actions[0].id, action_revision: 1, description: input.description, stop_condition: input.stop_condition,
+      resumption_note: input.resumption_note, supersedes: input.supersedes, correction_reason: input.correction_reason,
+    } }));
+    const user = userEvent.setup(); await ready(); await user.click(screen.getByRole("button", { name: "Save where I stopped" })); await user.type(screen.getByLabelText("What changed?"), "Keep the original objective account");
+    await user.click(screen.getByRole("button", { name: "Save checkpoint" })); vi.mocked(api.loadWorkspace).mockResolvedValue(fresh);
+    await user.click(screen.getByRole("button", { name: "Check saved history and keep draft" }));
+    expect(screen.getByLabelText("What changed?")).toHaveValue("Keep the original objective account"); expect(screen.getByText(/Your unsaved work still belongs to/)).toHaveTextContent("Saved focus has changed to List supplies");
+    expect(screen.getByLabelText("Parent objective")).toHaveValue(secondId); expect(screen.getByText(`Objective: ${saved.objectives[0].title}`)).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Save checkpoint" }));
+    expect(vi.mocked(api.recordCheckpoint).mock.calls[1][0]).toMatchObject({ expected_generation: fresh.generation, objective_id: objectiveId, note: "Keep the original objective account" });
+    expect(screen.queryByLabelText("What changed?")).not.toBeInTheDocument(); expect(screen.getByLabelText("Parent objective")).toHaveValue(secondId); expect(api.selectObjective).not.toHaveBeenCalled();
+  });
+  it.each(["archived", "removed"] as const)("preserves a checkpoint draft when background refresh reports its objective %s", async (change) => {
+    const initial: Workspace = { ...saved, study: { ...emptyStudy, opportunities: [{ ...studyOpportunity, cue_at: new Date(Date.now() + 3_600_000).toISOString(), manifest_id: null }] } };
+    vi.mocked(api.loadWorkspace).mockResolvedValue(initial);
+    const user = userEvent.setup(); await ready(); await user.click(screen.getByRole("button", { name: "Save where I stopped" })); await user.type(screen.getByLabelText("What changed?"), "Keep this draft through refresh");
+    const fresh: Workspace = { ...initial, generation: "00000000-0000-4000-8000-000000000093", selected_objective_id: secondId,
+      objectives: change === "removed" ? [saved.objectives[1]] : saved.objectives,
+      daily: { ...saved.daily, objectives: change === "removed" ? [saved.daily.objectives[1]] : saved.daily.objectives.map((item) => item.objective_id === objectiveId ? { ...item, status: "archived" } : item) } };
+    vi.mocked(api.loadWorkspace).mockResolvedValue(fresh); await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await screen.findByText(/Your unsaved work still belongs to/); expect(screen.getByLabelText("What changed?")).toHaveValue("Keep this draft through refresh"); expect(screen.getByLabelText("Parent objective")).toHaveValue(secondId);
+    if (change === "removed") { expect(screen.getByText(/That objective is no longer/)).toBeVisible(); expect(screen.getByRole("button", { name: "Save checkpoint" })).toBeDisabled(); }
+    await user.click(screen.getByRole("button", { name: "Discard checkpoint draft" })); expect(screen.queryByLabelText("What changed?")).not.toBeInTheDocument(); expect(api.recordCheckpoint).not.toHaveBeenCalled(); expect(api.selectObjective).not.toHaveBeenCalled();
+  });
+  it("keeps an unconfirmed checkpoint copyable and explicitly discardable if refreshed records removed its objective", async () => {
+    vi.mocked(api.recordCheckpoint).mockRejectedValue(new Error("Response unavailable"));
+    const user = userEvent.setup(); await ready(); await user.click(screen.getByRole("button", { name: "Save where I stopped" })); await user.type(screen.getByLabelText("What changed?"), "Retain this unconfirmed account"); await user.click(screen.getByRole("button", { name: "Save checkpoint" }));
+    vi.mocked(api.loadWorkspace).mockResolvedValue({ ...saved, selected_objective_id: secondId, objectives: [saved.objectives[1]], daily: { ...saved.daily, objectives: [saved.daily.objectives[1]] } });
+    await user.click(screen.getByRole("button", { name: "Check saved history and keep draft" }));
+    const draft = screen.getByLabelText("What changed?"); expect(draft).toHaveValue("Retain this unconfirmed account"); expect(draft).toBeEnabled(); expect(draft).toHaveAttribute("readonly");
+    expect(screen.getByRole("button", { name: "Retry same checkpoint" })).toBeDisabled(); await user.click(screen.getByRole("button", { name: "Discard checkpoint draft" })); expect(screen.queryByLabelText("What changed?")).not.toBeInTheDocument(); expect(api.recordCheckpoint).toHaveBeenCalledTimes(1);
+  });
+  it.each(["paused", "archived"] as const)("restores keyboard focus after the last active objective becomes %s and is restored", async (status) => {
+    const initial: Workspace = { ...saved, objectives: [saved.objectives[0]], daily: { ...saved.daily, objectives: [saved.daily.objectives[0]] } };
+    const inactive: Workspace = { ...initial, selected_objective_id: null, daily: { ...initial.daily, objectives: [{ ...initial.daily.objectives[0], status }] } };
+    vi.mocked(api.loadWorkspace).mockResolvedValue(initial); vi.mocked(api.setObjectiveStatus).mockResolvedValueOnce(inactive).mockResolvedValueOnce({ ...initial, selected_objective_id: null });
+    const user = userEvent.setup(); await ready(); await user.click(screen.getByText("Manage objectives and priority"));
+    screen.getByRole("button", { name: `${status === "paused" ? "Pause" : "Archive"} ${saved.objectives[0].title}` }).focus(); await user.keyboard("{Enter}");
+    expect(await screen.findByText(/No active objective is focused/)).toBeVisible(); if (status === "paused") expect(screen.getByText(/Objective paused. No active priority remains/)).toBeVisible();
+    await waitFor(() => expect(document.getElementById(`priority-${objectiveId}`)).toHaveFocus()); await user.tab();
+    expect(screen.getByRole("button", { name: `${status === "paused" ? "Reactivate" : "Restore"} ${saved.objectives[0].title}` })).toHaveFocus(); await user.keyboard("{Enter}");
+    await waitFor(() => expect(document.getElementById(`priority-${objectiveId}`)).toHaveFocus()); expect(api.setObjectiveStatus).toHaveBeenLastCalledWith(expect.objectContaining({ objective_id: objectiveId, status: "active" }));
+  });
+  it("shows the latest confirmed checkpoint time even when the saved action did not change", async () => {
+    const recorded_at = "2026-10-21T18:00:00.000Z";
+    vi.mocked(api.loadWorkspace).mockResolvedValue({ ...saved, daily: { ...saved.daily, checkpoints: [{ id: "checkpoint", command_id: "command", sequence: 1, objective_id: objectiveId, note: "Confirmed the same next step.", reference: null, provenance: "self_report", recorded_at, action_id: saved.actions[0].id, action_revision: 1, description: saved.actions[0].description, stop_condition: saved.actions[0].stop_condition, resumption_note: saved.notes[0].text, supersedes: null, correction_reason: null }] } });
+    await ready(); expect(document.querySelector(".last-confirmed time")).toHaveAttribute("datetime", recorded_at);
+  });
+  it("guards a checkpoint draft before recovery replacement and retains it after cancelling", async () => {
+    vi.mocked(api.previewRecovery).mockResolvedValue(incoming);
+    const user = userEvent.setup(); await ready(); await user.click(screen.getByRole("button", { name: "Save where I stopped" })); await user.type(screen.getByLabelText("What changed?"), "Keep my local stopping note");
+    await user.click(screen.getByRole("button", { name: "Preview recovery" })); await user.click(await screen.findByRole("button", { name: "Replace local records" }));
+    expect(screen.getByRole("dialog", { name: "Keep your unsaved draft?" })).toBeVisible(); expect(api.restoreImport).not.toHaveBeenCalled(); await user.click(screen.getByRole("button", { name: "Keep editing" }));
+    expect(screen.getByLabelText("What changed?")).toHaveValue("Keep my local stopping note"); await waitFor(() => expect(screen.getByLabelText("What changed?")).toHaveFocus());
+  });
+  it.each(["saved", "cancelled"] as const)("keeps failed-load recovery controls usable after a %s recovery export", async (result) => {
+    vi.mocked(api.loadWorkspace).mockRejectedValueOnce({ code: "storage_error", message: "Could not open local records." }).mockResolvedValue(saved);
+    let finishExport!: (value: api.ExportResult | null) => void;
+    vi.mocked(api.exportRecovery).mockReturnValue(new Promise((resolve) => { finishExport = resolve; }));
+    const user = userEvent.setup(); render(<App />); await screen.findByRole("alert"); await user.click(screen.getByRole("button", { name: "Export recovery copy" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not open local records.");
+    expect(screen.getByRole("button", { name: "Retry connection" })).toBeDisabled(); expect(screen.getByRole("button", { name: "Export recovery copy" })).toBeDisabled();
+    await act(async () => finishExport(result === "saved" ? { file_name: "synthetic-recovery.json" } : null));
+    expect(api.exportRecovery).toHaveBeenCalledTimes(1); expect(api.restoreImport).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not open local records."); expect(screen.getByRole("button", { name: "Export recovery copy" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Retry connection" })).toBeEnabled();
+    if (result === "saved") expect(screen.getByRole("status")).toHaveTextContent("synthetic-recovery.json"); else expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Retry connection" })); await screen.findByRole("heading", { name: "Sketch the bed on paper" });
+    expect(api.loadWorkspace).toHaveBeenCalledTimes(2); expect(screen.queryByRole("alert")).not.toBeInTheDocument(); expect(screen.queryByRole("button", { name: "Retry connection" })).not.toBeInTheDocument();
+  });
 
   it("keeps World unloaded on startup and preserves a Work draft across voluntary navigation", async () => {
     vi.mocked(api.loadWorld).mockResolvedValue({ ...world, chapter: null });
@@ -375,12 +451,13 @@ describe("Work", () => {
     vi.mocked(api.saveWork).mockResolvedValue(withWork);
     const user = userEvent.setup({ delay: null }); await ready();
     for (let index = 0; index < 4; index += 1) await user.tab();
-    expect(screen.getByRole("button", { name: "New project" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Create your first project" })).toHaveFocus();
     await user.keyboard("{Enter}"); expect(screen.getByLabelText("Project name")).toHaveFocus();
     await user.keyboard(`${saved.projects[0].title}{Enter}`);
     await screen.findByText("Project saved on this device.");
     expect(screen.getByRole("heading", { name: "Work" })).toHaveFocus();
-    await user.tab({ shift: true }); expect(screen.getByRole("button", { name: "New objective" })).toHaveFocus();
+    for (let index = 0; index < 4; index += 1) await user.tab();
+    expect(screen.getByRole("button", { name: "New objective" })).toHaveFocus();
     await user.keyboard("{Enter}"); expect(screen.getByLabelText("Bounded objective")).toHaveFocus();
     await user.keyboard(saved.objectives[0].title);
     await user.tab(); expect(screen.getByLabelText(/Criterion:/)).toHaveFocus();

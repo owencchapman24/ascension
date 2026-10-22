@@ -1,9 +1,12 @@
-import { lazy, Suspense, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import * as api from "./platform/client";
 import type { CommandError, ImportPreview, Objective, Project, Workspace } from "./platform/client";
 import ProgressPanel from "./progress/ProgressPanel";
 import StudyPanel from "./study/StudyPanel";
 import WorldPanel from "./study/WorldPanel";
+import DailyWork from "./work/DailyWork";
+import BackupPanel from "./work/BackupPanel";
+import ObjectiveManager, { organizedObjectives } from "./work/ObjectiveManager";
 import "./App.css";
 
 const RiverReach = lazy(() => import("./world/RiverReach"));
@@ -22,7 +25,7 @@ function Modal({ title, children, onCancel }: { title: string; children: ReactNo
     ref.current?.querySelector<HTMLElement>("button")?.focus();
     return () => queueMicrotask(() => {
       const nextDialog = document.querySelector<HTMLElement>("[role=dialog]");
-      const editorInput = Array.from(document.querySelectorAll<HTMLElement>(".editor-panel input, .editor-panel textarea, .progress-editor input, .progress-editor textarea, .progress-editor select, .study-editor[data-active-draft=true] input, .study-editor[data-active-draft=true] textarea, .study-editor[data-active-draft=true] select")).find((element) => !element.closest("[hidden], details:not([open])"));
+      const editorInput = Array.from(document.querySelectorAll<HTMLElement>(".editor-panel input, .editor-panel textarea, .progress-editor input, .progress-editor textarea, .progress-editor select, .checkpoint-editor textarea, .checkpoint-editor input, .study-editor[data-active-draft=true] input, .study-editor[data-active-draft=true] textarea, .study-editor[data-active-draft=true] select")).find((element) => !element.closest("[hidden], details:not([open])"));
       if (nextDialog) {
         nextDialog.querySelector<HTMLElement>("button:not(:disabled)")?.focus();
       } else if (editorInput && !editorInput.matches(":disabled")) {
@@ -84,6 +87,8 @@ function App() {
   const [busy, setBusy] = useState(false);
   const lock = useRef(false);
   const [error, setError] = useState<CommandError | null>(null);
+  const [loadError, setLoadError] = useState<CommandError | null>(null);
+  const visibleError = error ?? loadError;
   const [validationError, setValidationError] = useState<ValidationError | null>(null);
   const [notice, setNotice] = useState("");
   const [editor, setEditor] = useState<Editor | null>(null);
@@ -92,6 +97,8 @@ function App() {
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [progressDirty, setProgressDirty] = useState(false);
   const [studyDirty, setStudyDirty] = useState(false);
+  const [dailyDirty, setDailyDirty] = useState(false);
+  const [dailyContext, setDailyContext] = useState<Objective | null>(null);
   const [worldDirty, setWorldDirty] = useState(false);
   const [worldBusy, setWorldBusy] = useState(false);
   const [worldModal, setWorldModal] = useState(false);
@@ -105,20 +112,32 @@ function App() {
   const editorKey = editor ? `${editor.kind}:${"id" in editor ? editor.id : editor.objective_id}` : "";
   const dirty = editor !== null && JSON.stringify(editor) !== baseline;
   const selected = workspace?.objectives.find((item) => item.id === workspace.selected_objective_id);
+  // This is temporary editor context, never persisted focus. An authoritative
+  // refresh may move or remove focus while the original draft still needs care.
+  const dailyObjective = dailyContext
+    ? workspace?.objectives.find((item) => item.id === dailyContext.id) ?? dailyContext
+    : selected;
+  const onDailyDirty = useCallback((next: boolean) => {
+    setDailyDirty(next);
+    setDailyContext((previous) => next ? previous ?? dailyObjective ?? null : null);
+  }, [dailyObjective]);
   const project = workspace?.projects.find((item) => item.id === projectId);
   const action = workspace?.actions.find((item) => item.objective_id === selected?.id);
   const note = workspace?.notes.find((item) => item.objective_id === selected?.id);
+  const lastCheckpoint = workspace?.daily.checkpoints.filter((item) => item.objective_id === selected?.id).slice(-1)[0];
+  const lastConfirmed = [action?.updated_at, note?.updated_at, lastCheckpoint?.recorded_at].filter((value): value is string => !!value).sort().reverse()[0];
   const activeStudy = workspace?.study.manifests.find((item) => item.status === "active");
 
   function adopt(next: Workspace, preferredProject?: string) {
     setWorkspace(next);
+    setLoadError(null);
     setProjectId((previous) => next.objectives.find((item) => item.id === next.selected_objective_id)?.project_id
       ?? (next.projects.some((item) => item.id === preferredProject) ? preferredProject! : next.projects.some((item) => item.id === previous) ? previous : next.projects[0]?.id ?? ""));
   }
 
   useEffect(() => {
     let active = true;
-    api.loadWorkspace().then((next) => { if (active) adopt(next); }, (cause: unknown) => { if (active) setError(api.normalizeError(cause)); })
+    api.loadWorkspace().then((next) => { if (active) adopt(next); }, (cause: unknown) => { if (active) setLoadError(api.normalizeError(cause)); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, []);
@@ -148,8 +167,8 @@ function App() {
     if (validationError) document.getElementById(`${validationError.field}-error`)?.scrollIntoView?.({ block: "nearest" });
   }, [validationError]);
   useEffect(() => {
-    if (error && !editor && !preview) errorNoticeRef.current?.scrollIntoView?.({ block: "nearest" });
-  }, [error, editor, preview]);
+    if (visibleError && !editor && !preview) errorNoticeRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [visibleError, editor, preview]);
 
   async function perform(task: () => Promise<void>) {
     if (lock.current) return false;
@@ -158,10 +177,10 @@ function App() {
     finally { lock.current = false; setBusy(false); }
   }
 
-  function resetProgressDraft() { setProgressEpoch((value) => value + 1); setProgressDirty(false); setStudyDirty(false); }
+  function resetProgressDraft() { setProgressEpoch((value) => value + 1); setProgressDirty(false); setStudyDirty(false); setDailyDirty(false); setDailyContext(null); }
   function resetWorldDraft() { setWorldEpoch((value) => value + 1); setWorldDirty(false); }
   function protectedAction(description: string, task: () => void, onKeep?: () => void, includesWorld = false) {
-    if (dirty || progressDirty || studyDirty || includesWorld && worldDirty) setGuard({ description, action: task, onKeep });
+    if (dirty || dailyDirty || progressDirty || studyDirty || includesWorld && worldDirty) setGuard({ description, action: task, onKeep });
     else task();
   }
   function openEditor(next: Editor) {
@@ -226,13 +245,14 @@ function App() {
     }), () => setPreview(null), true);
   }
 
-  const errorNotice = error && (
+  const errorNotice = visibleError && (
     <div className="error-banner" ref={errorNoticeRef}>
-      <p role="alert">{error.message}</p>
-      {error.code === "conflict" && <p>Your saved records changed. Reload to review them before trying again.</p>}
+      <p role="alert">{visibleError.message}</p>
+      {visibleError.code === "conflict" && <p>Your saved records changed. Reload to review them before trying again.</p>}
       <button type="button" className="secondary" disabled={busy || !!guard} onClick={reload}>
         {workspace ? "Reload saved records" : "Retry connection"}
       </button>
+      {!workspace && <button type="button" className="secondary" disabled={busy} onClick={() => void perform(async () => { const result = await api.exportRecovery(); if (result) setNotice(`Recovery copy exported to ${result.file_name}. Import it into a fresh isolated profile to recover your records.`); })}>Export recovery copy</button>}
     </div>
   );
 
@@ -255,12 +275,66 @@ function App() {
         <fieldset className="workspace-controls" disabled={busy || worldBusy || !!guard || !!preview}>
           <legend className="visually-hidden">Workspace</legend>
           <div hidden={view !== "work"}>
+          <section className="work-panel" aria-labelledby="work-heading">
+            <div className="section-heading">
+              <h2 id="work-heading" tabIndex={-1}>Work</h2>
+              {selected && (
+                <button type="button" className="secondary" onClick={editWork}>
+                  {action ? "Edit next action and note" : "Add next action"}
+                </button>
+              )}
+            </div>
+            {!selected ? (
+              <div className="empty-state">
+                <h3>Start with a clear next step</h3>
+                <p>{workspace.projects.length
+                  ? workspace.objectives.length && !workspace.daily.objectives.some((item) => item.status === "active")
+                    ? "No active objective is focused. Reactivate or restore one under Manage objectives and priority, or create a new objective."
+                    : "Choose or create a bounded objective, then save one concrete next action."
+                  : "Create a project, then add a bounded objective and a concrete next action."}</p>
+                {!workspace.projects.length && (
+                  <button type="button" onClick={() => editProject()}>Create your first project</button>
+                )}
+              </div>
+            ) : (
+              <>
+                <p className="focused-objective"><strong>{selected.title}</strong> <span className="muted">· {workspace.projects.find((item) => item.id === selected.project_id)?.title}</span></p>
+                {action ? (
+                  <div className="saved-action">
+                    <p className="eyebrow">Saved next action</p>
+                    <h3 className="preserve-text" tabIndex={-1}>{action.description}</h3>
+                    <p className="detail-label">Stop condition</p>
+                    <p className="preserve-text">{action.stop_condition}</p>
+                  </div>
+                ) : (
+                  <p className="empty-action">No next action saved yet. Describe one concrete action and where you will stop.</p>
+                )}
+                <div className="saved-note">
+                  <h3>Resumption note</h3>
+                  <p className={note ? "preserve-text" : "muted"}>{note?.text ?? "No resumption note saved."}</p>
+                </div>
+                {lastConfirmed && <p className="last-confirmed muted">Last confirmed update: <time dateTime={lastConfirmed}>{new Date(lastConfirmed).toLocaleString()}</time></p>}
+                <details className="objective-context">
+                  <summary>Objective and criterion</summary>
+                  <h3 className="preserve-text">{selected.title}</h3>
+                  <p className="detail-label">Criterion</p>
+                  <p className="preserve-text">{selected.criterion}</p>
+                </details>
+              </>
+            )}
+            {!editor && dailyObjective && <fieldset className="optional-controls" disabled={progressDirty || studyDirty}><legend className="visually-hidden">Daily work controls</legend>
+              {dailyContext && dailyContext.id !== workspace.selected_objective_id && <p role="status" className="notice">Your unsaved work still belongs to {dailyContext.title}. {workspace.objectives.some((item) => item.id === dailyContext.id)
+                ? `Saved focus has changed${selected ? ` to ${selected.title}` : " to no active objective"}. Finish or discard this draft when ready.`
+                : "That objective is no longer in saved records. Your draft remains here to copy or discard."}</p>}
+              <DailyWork key={`daily:${dailyObjective.id}:${progressEpoch}`} workspace={workspace} objective={dailyObjective} busy={busy} onDirtyChange={onDailyDirty} onSelect={changeSelection}
+                onMutation={(task, message) => perform(async () => { adopt(await task()); setNotice(message); })} /></fieldset>}
+          </section>
           <section className="chooser" aria-label="Choose your work">
             <div className="chooser-field">
               <label htmlFor="project-select">Project</label>
               <select id="project-select" value={projectId} disabled={!workspace.projects.length} onChange={(event) => {
                 const id = event.target.value;
-                changeSelection(workspace.objectives.find((item) => item.project_id === id)?.id ?? null, id);
+                changeSelection(organizedObjectives(workspace).find((item) => item.objective.project_id === id && item.organization.status === "active")?.objective.id ?? null, id);
               }}>
                 <option value="" disabled>No project yet</option>
                 {workspace.projects.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
@@ -276,7 +350,7 @@ function App() {
                 disabled={!workspace.objectives.some((item) => item.project_id === projectId)}
                 onChange={(event) => changeSelection(event.target.value || null)}>
                 <option value="">Choose an objective</option>
-                {workspace.objectives.filter((item) => item.project_id === projectId).map((item) => (
+                {organizedObjectives(workspace).filter((item) => item.objective.project_id === projectId && item.organization.status === "active").map(({ objective: item }) => (
                   <option key={item.id} value={item.id}>{item.title}</option>
                 ))}
               </select>
@@ -288,53 +362,10 @@ function App() {
               )}
             </div>
           </section>
-          <section className="work-panel" aria-labelledby="work-heading">
-            <div className="section-heading">
-              <h2 id="work-heading" tabIndex={-1}>Work</h2>
-              {selected && (
-                <button type="button" className="secondary" onClick={editWork}>
-                  {action ? "Edit next action and note" : "Add next action"}
-                </button>
-              )}
-            </div>
-            {!selected ? (
-              <div className="empty-state">
-                <h3>Start with a clear next step</h3>
-                <p>{workspace.projects.length
-                  ? "Choose or create a bounded objective, then save one concrete next action."
-                  : "Create a project, then add a bounded objective and a concrete next action."}</p>
-                {!workspace.projects.length && (
-                  <button type="button" onClick={() => editProject()}>Create your first project</button>
-                )}
-              </div>
-            ) : (
-              <>
-                {action ? (
-                  <div className="saved-action">
-                    <p className="eyebrow">Saved next action</p>
-                    <h3 className="preserve-text">{action.description}</h3>
-                    <p className="detail-label">Stop condition</p>
-                    <p className="preserve-text">{action.stop_condition}</p>
-                  </div>
-                ) : (
-                  <p className="empty-action">No next action saved yet. Describe one concrete action and where you will stop.</p>
-                )}
-                <div className="saved-note">
-                  <h3>Resumption note</h3>
-                  <p className={note ? "preserve-text" : "muted"}>{note?.text ?? "No resumption note saved."}</p>
-                </div>
-                <details className="objective-context">
-                  <summary>Objective and criterion</summary>
-                  <h3 className="preserve-text">{selected.title}</h3>
-                  <p className="detail-label">Criterion</p>
-                  <p className="preserve-text">{selected.criterion}</p>
-                </details>
-              </>
-            )}
-          </section>
-          {selected && !editor && <fieldset className="optional-controls" disabled={studyDirty}><legend className="visually-hidden">Progress and evidence controls</legend><ProgressPanel key={`${selected.id}:${progressEpoch}`} workspace={workspace} objective={selected} busy={busy}
+          <fieldset className="optional-controls" disabled={!!editor || dailyDirty || progressDirty || studyDirty}><legend className="visually-hidden">Objective organization controls</legend><ObjectiveManager workspace={workspace} busy={busy} onSelect={changeSelection} onMutation={(task, message) => perform(async () => { adopt(await task()); setNotice(message); })} /></fieldset>
+          {selected && !editor && <fieldset className="optional-controls" disabled={studyDirty || dailyDirty}><legend className="visually-hidden">Progress and evidence controls</legend><ProgressPanel key={`${selected.id}:${progressEpoch}`} workspace={workspace} objective={selected} busy={busy}
             onDirtyChange={setProgressDirty} onMutation={(task, message) => perform(async () => { adopt(await task()); setNotice(message); })} /></fieldset>}
-          {!editor && <fieldset className="optional-controls" disabled={progressDirty}><legend className="visually-hidden">Opportunity controls</legend><StudyPanel key={`study:${selected?.id ?? "none"}:${progressEpoch}`} workspace={workspace} objective={selected} busy={busy}
+          {!editor && <fieldset className="optional-controls" disabled={progressDirty || dailyDirty}><legend className="visually-hidden">Opportunity controls</legend><StudyPanel key={`study:${selected?.id ?? "none"}:${progressEpoch}`} workspace={workspace} objective={selected} busy={busy}
             onDirtyChange={setStudyDirty} onMutation={(task, message) => perform(async () => { adopt(await task()); setNotice(message); })} /></fieldset>}
           {!editor && <WorldPanel workspace={workspace} busy={busy} onMutation={(task, message) => perform(async () => { adopt(await task()); setNotice(message); })} />}
           {editor && (
@@ -407,6 +438,7 @@ function App() {
               })}>Import records</button>
               <button type="button" className="text-button" onClick={reload}>Reload saved records</button>
             </div>
+            <BackupPanel generation={workspace.generation} busy={busy} onPreview={() => void perform(async () => { const result = await api.previewRecovery(); if (result) setPreview(result); })} onExport={() => void perform(async () => { const result = await api.exportRecovery(); if (result) setNotice(`Recovery copy exported to ${result.file_name}.`); })} />
           </footer>
         </fieldset>
       )}
@@ -419,7 +451,7 @@ function App() {
             <caption>Record counts</caption>
             <thead><tr><th scope="col">Records</th><th scope="col">Local</th><th scope="col">Incoming</th></tr></thead>
             <tbody>
-              {(["projects", "objectives", "actions", "notes", "criteria", "evidence", "snapshots", "acceptances", "corrections", "grants", "ledger", "commands", "wallet_bc", "schedule_epochs", "study_manifests", "opportunities", "assignments", "outcome_events", "exposures", "burdens", "reflections", "world_commands", "world_spends", "world_buildings", "world_reserved_bc", "world_spent_bc", "world_funded_sites", "world_endings"] as const).map((key) => (
+              {(["projects", "objectives", "actions", "notes", "criteria", "evidence", "snapshots", "acceptances", "corrections", "grants", "ledger", "commands", "wallet_bc", "schedule_epochs", "study_manifests", "opportunities", "assignments", "outcome_events", "exposures", "burdens", "reflections", "world_commands", "world_spends", "world_buildings", "world_reserved_bc", "world_spent_bc", "world_funded_sites", "world_endings", "objective_planning", "checkpoints", "checkpoint_commands"] as const).map((key) => (
                 <tr key={key}>
                   <th scope="row">{key === "wallet_bc" ? "Build Credits" : (key[0].toUpperCase() + key.slice(1)).replace(/_/g, " ")}</th>
                   <td>{preview.current_counts[key]}</td><td>{preview.incoming_counts[key]}</td>

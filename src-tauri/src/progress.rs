@@ -222,7 +222,10 @@ model!(RejectReviewInput {
 });
 
 fn db<T>(value: rusqlite::Result<T>) -> Result<T, CommandError> {
-    value.map_err(|_| CommandError::storage())
+    value.map_err(|error| {
+        crate::restore_diagnostics::sqlite(&error);
+        CommandError::storage()
+    })
 }
 fn invalid(message: &str) -> CommandError {
     CommandError::invalid(message)
@@ -322,6 +325,7 @@ fn insert<T: Serialize>(
     id: &str,
     value: &T,
 ) -> Result<(), CommandError> {
+    crate::restore_diagnostics::table_operation("insert", table);
     db(connection.execute(
         &format!("INSERT INTO {table}(id,payload) VALUES(?1,?2)"),
         params![id, encode(value)?],
@@ -334,6 +338,7 @@ fn update<T: Serialize>(
     id: &str,
     value: &T,
 ) -> Result<(), CommandError> {
+    crate::restore_diagnostics::table_operation("update", table);
     if db(connection.execute(
         &format!("UPDATE {table} SET payload=?2 WHERE id=?1"),
         params![id, encode(value)?],
