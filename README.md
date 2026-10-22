@@ -112,6 +112,8 @@ For repeatable installed-app lifecycle checks, run `scripts/verify-native.ps1`. 
 
 The offline helper verifies an ordinary renderer request succeeds online and fails without reaching its owned loopback server while offline, then reloads the app and checks unchanged saved records. It leaves that WebView2 target offline for the native workflows and repeats the probe after each restart. A refused proxy is also set from process launch. OS and Rust-process networking are unchanged. Installers remain unsigned and require preinstalled WebView2. No signing, public release, or CI deployment was performed.
 
+For the targeted restore reliability gate, pass `-RestoreStress` to `scripts/verify-native.ps1`. It retains the complete installed suite and adds repeated fresh-profile restores, restart comparisons, recovery, and explicit failure/retry fixtures. Only the isolated verification package enables bounded, content-free restore diagnostics; the ordinary application emits none. Results and remaining uncertainty are recorded in the dated diagnostic closure in the Stage 4.5 verification log.
+
 ## Local data, export, and recovery
 
 The normal Windows build stores its SQLite database at `%APPDATA%\io.ascension.work\ascension.sqlite3`. Its `backups` subdirectory holds recovery files. Development and the normal installed build use this identifier unless an explicit isolated test configuration overrides it.
