@@ -8,9 +8,10 @@ import {randomUUID} from 'node:crypto';
 
 const acknowledgements = ['e00_assessed','frozen_protocol','schedule_epoch','assignment_and_window','matched_support','as_assigned_analysis','voluntary_stop'];
 const utc = value => new Date(value).toISOString();
-function shiftStudy(records, delta) {
+export const studyTimestampFields = Object.freeze(['created_at','effective_from','cue_at','eligibility_decided_at','assigned_at','observed_at','started_at','deadline_at']);
+export function shiftStudy(records, delta) {
   const copy = structuredClone(records);
-  const timestamps = new Set(['created_at','effective_from','cue_at','eligibility_decided_at','assigned_at','observed_at','started_at','deadline_at']);
+  const timestamps = new Set(studyTimestampFields);
   for (const rows of Object.values(copy.study)) if (Array.isArray(rows)) for (const row of rows) {
     for (const key of Object.keys(row)) if (timestamps.has(key) && row[key] !== null) row[key] = utc(Date.parse(row[key]) + delta);
   }

@@ -1,6 +1,6 @@
 # Builds and installs an isolated package; never opens the normal app profile.
 # Run from PowerShell: & .\scripts\verify-native.ps1
-param([string]$Repository = (Split-Path -Parent $PSScriptRoot))
+param([string]$Repository = (Split-Path -Parent $PSScriptRoot), [switch]$RestoreStress)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $repository = [IO.Path]::GetFullPath($Repository)
@@ -45,7 +45,9 @@ try {
     Write-Output 'Isolated package built and installed; beginning native lifecycle verification.'
     try {
         $ErrorActionPreference = 'Continue'
-        & node scripts/native-regression.mjs $runRoot
+        $nativeOptions = @()
+        if ($RestoreStress) { $nativeOptions += '--restore-stress' }
+        & node scripts/native-regression.mjs $runRoot @nativeOptions
         $nativeExit = $LASTEXITCODE
     } finally { $ErrorActionPreference = 'Stop' }
     if ($nativeExit -ne 0) { throw 'Installed application regression failed; see the isolated run directory.' }

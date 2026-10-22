@@ -15,9 +15,12 @@ import { verifyProgress } from './native-progress.mjs';
 import { verifyStudy } from './native-study.mjs';
 import { verifyWorld } from './native-world.mjs';
 import { verifyDaily } from './native-daily.mjs';
+import { verifyRestoreStress } from './native-restore-stress.mjs';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const root = path.resolve(process.argv[2] ?? '');
+const restoreStressEnabled = process.argv.slice(3).includes('--restore-stress');
+assert.ok(process.argv.slice(3).every(value => value === '--restore-stress'), 'Unknown native verification option');
 assert.ok(root.startsWith(path.join(repository, '.artifacts') + path.sep), 'A repository-local isolated run is required.');
 const config = JSON.parse((await readFile(path.join(root, 'tauri.conf.json'), 'utf8')).replace(/^\uFEFF/, ''));
 assert.equal(config.app.appDirectoriesOverride, path.join(root, 'profile'));
@@ -205,14 +208,14 @@ async function resizeWindow(width, height) {
   });
   await until(() => evaluate(`window.outerWidth <= ${width} && window.innerWidth > 0`), 'native window resize');
 }
-async function launch(expectStorageFailure = false) {
+async function launch(expectStorageFailure = false, onIsolatedWorkReady) {
   const launchedAt = performance.now();
   const port = await freePort();
   const environment = Object.fromEntries(Object.entries(process.env)
-    .filter(([name]) => !name.toUpperCase().startsWith('WEBVIEW2_')));
+    .filter(([name]) => !name.toUpperCase().startsWith('WEBVIEW2_') && name.toUpperCase() !== 'ASCENSION_RESTORE_DIAGNOSTICS'));
   application = spawn(executable, [], {
     cwd: path.dirname(executable), windowsHide: true, stdio: 'ignore',
-    env: { ...environment, WEBVIEW2_USER_DATA_FOLDER: path.join(root, 'profile', 'webview'), WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:
+    env: { ...environment, ...(restoreStressEnabled ? { ASCENSION_RESTORE_DIAGNOSTICS: '1' } : {}), WEBVIEW2_USER_DATA_FOLDER: path.join(root, 'profile', 'webview'), WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:
       `--remote-debugging-port=${port} --proxy-server=http://127.0.0.1:9 --proxy-bypass-list=tauri.localhost;ipc.localhost` },
   });
   application.on('error', error => { console.error(error.message); });
@@ -229,6 +232,12 @@ async function launch(expectStorageFailure = false) {
   assert.equal(await evaluate("window.__TAURI_INTERNALS__.invoke('plugin:app|identifier')"), config.identifier);
   const actualDataPath = await evaluate("window.__TAURI_INTERNALS__.invoke('plugin:path|resolve_directory', {directory:14})");
   assert.equal(path.resolve(actualDataPath).toLowerCase(), path.join(root, 'profile').toLowerCase(), 'Actual native app-data path must be isolated');
+  // The stress callback runs as soon as Work and native isolation are verified,
+  // before the slower proxy/process and loopback offline probes below.
+  if (onIsolatedWorkReady) {
+    assert.equal(expectStorageFailure, false);
+    await onIsolatedWorkReady();
+  }
   const args = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
     `$items = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = ${application.pid}"); if (!$items.Count) { throw 'WebView2 child missing' }; $text = ($items | ForEach-Object { $_.CommandLine }) -join ' '; [bool]($text.Contains('--proxy-server=http://127.0.0.1:9') -and $text.Contains('tauri.localhost;ipc.localhost'))`],
   { windowsHide: true, encoding: 'utf8' }).trim();
@@ -507,8 +516,11 @@ try {
     nativeDialog,ready,closeApplication,launch,checks,key,resizeWindow});
   await verifyDaily({evaluate,clientSend:(...args)=>client.send(...args),clickButton,typeAt,workspace,until,notice,root,exportFile,previewFile,
     nativeDialog,ready,closeApplication,launch,checks,key,resizeWindow,backupsRoot});
+  const inheritedChecks = checks.length;
+  const restoreStress = restoreStressEnabled ? await verifyRestoreStress({evaluate,clientSend:(...args)=>client.send(...args),clickButton,workspace,until,
+    root,exportFile,nativeDialog,ready,closeApplication,launch,checks,backupsRoot,recordSet,durableView}) : null;
   await closeApplication();
-  await writeFile(path.join(root, 'native-result.json'), JSON.stringify({ passed: true, checks, dialogs, offline, startup,
+  await writeFile(path.join(root, 'native-result.json'), JSON.stringify({ passed: true, checks, inherited_checks: inheritedChecks, restore_stress: restoreStress, dialogs, offline, startup,
     limitations: ['Offline denial is scoped to WebView2; Rust/OS-wide networking is not blocked.', 'Interruption tested before import confirmation and after acknowledged writes, not during a physical power failure.'] }, null, 2));
   console.log(`PASS: ${checks.length} installed WebView2 lifecycle checks`);
 } catch (error) {
@@ -519,8 +531,15 @@ try {
       await writeFile(path.join(root, 'failure-ui.json'), JSON.stringify(await evaluate('({text:document.body.innerText, focus:document.activeElement?.outerHTML})'), null, 2));
     } catch { /* Preserve the original failure if the renderer is already gone. */ }
   }
-  await writeFile(path.join(root, 'native-result.json'), JSON.stringify({ passed: false, checks, dialogs, offline, startup, failure: error.message }, null, 2));
-  throw error;
+  // AssertionError inspection includes actual/expected graphs. Keep those in the
+  // dedicated synthetic export artifacts, not the console or result summary.
+  const failure = { name: String(error.name ?? 'Error').slice(0, 80),
+    code: typeof error.code === 'string' ? error.code.slice(0, 80) : null,
+    message: String(error.message ?? 'Native verification failed').split(/\r?\n/, 1)[0].slice(0, 300),
+    location: String(error.stack ?? '').match(/(?:[/\\])(native-[a-z-]+\.mjs:\d+:\d+)/)?.[1] ?? null };
+  await writeFile(path.join(root, 'native-result.json'), JSON.stringify({ passed: false, checks, dialogs, offline, startup, failure: failure.message, failure_details: failure }, null, 2));
+  console.error(`FAIL: ${JSON.stringify(failure)}`);
+  process.exitCode = 1;
 } finally {
   client?.close();
   if (application && application.exitCode === null && application.signalCode === null) application.kill();
