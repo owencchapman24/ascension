@@ -10,7 +10,13 @@ This is a **public** repository for a Windows-first, local-first productivity ap
 - Do not access APIs, cloud accounts, external project directories, connectors, or files other than normal public dependency registries without explicit approval.
 - Do not add Actions workflows until tests exist and the workflow is deliberately reviewed for permissions, secrets, trigger scope, and artifact retention. Public runners still have concurrency, storage and security considerations.
 
-## Current goal — Stage 4.5 (owner authorized)
+## Current goal — GitHub Actions CI (owner authorized)
+
+The owner authorizes a bounded CI milestone on `chore/github-actions-ci`, based on merged Stage 4.5 `4a6c32d0a84e61d5350baccc1e2640239ab409f7`. Add one reviewed, read-only `pull_request` workflow for the existing frontend and Windows Rust checks, with verified full-SHA action pins, pinned toolchains, bounded timeouts, and cancellation of superseded PR runs. Public upstream action/runner documentation and verification-tool downloads are authorized for this milestone. Use no secrets, write permissions, privileged triggers, self-hosted runners, caches, artifact uploads, installer builds, or installed-app automation. See `docs/implementation/CI_SETUP.md` for coverage, validation, and maintenance.
+
+Verified local commits are authorized; pushing, creating or merging PRs, publishing, releases, deployment, new integrations, machine-wide installation, and changing the normal app/profile are not. Preserve application behavior, tests, dependency contracts, historical verification reports, and main. This authorization supersedes only the prior branch and CI prohibition for this milestone. Stage 4.6A, Stage 5, and other product scope remain excluded; stop after local delivery. Hosted checks must be observed after the owner pushes and creates a PR before any merge recommendation.
+
+## Historical Stage 4.5 authorization
 
 The owner's Stage 4.5 assignment authorizes daily-use Work improvements: objective lifecycle and explicit priority/focus, append-only factual checkpoints with atomic saved-action updates and replay protection, voluntary initiation support, simpler ordinary opportunities, coherent automatic local snapshots, recovery, additive database v6 and complete interchange v5. Read `docs/specs/STAGE_4_5.md` and ADR-0007 in addition to the baseline documents below. Work exclusively on `feat/stage-4-5-daily-use`, based on Stage 4 merge `c27c1d7`. Verified local commits and isolated installed-Windows QA are authorized; pushing, merging, publishing, releasing, deployment, Actions workflows, AI, Stage 5, real study activation, and modifying the normal installation/profile are not. Preserve all prior authority and economy invariants. The specific Stage 4.5 authorization supersedes the historical Stage 4 branch/stop instruction below.
 
